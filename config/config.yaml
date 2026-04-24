@@ -1,0 +1,34 @@
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+
+# Baltic States — CDS bounding boxes in [N, W, S, E] decimal degrees (WGS84).
+# Values are rounded outward to 0.1° to guarantee full coverage of border cells.
+# Official bbox source: Natural Earth / GADM country extents.
+countries:
+  EE:
+    name: Estonia
+    area: [59.7, 23.3, 57.4, 28.2]   # official: lon 23.34–28.13, lat 57.47–59.61
+  LV:
+    name: Latvia
+    area: [58.1, 20.9, 55.6, 28.3]   # official: lon 20.97–28.24, lat 55.67–57.97
+  LT:
+    name: Lithuania
+    area: [56.5, 20.9, 53.8, 27.0]   # official: lon 20.93–26.94, lat 53.89–56.45
+
+metrics:
+  heat_days:
+    threshold_tx_degC: 30
+  frost_days:
+    threshold_tn_degC: 0
+
+# Physical plausibility bounds used by validate.py.
+# t2m bounds apply to raw ERA5-Land values (Kelvin); tx bounds to derived daily
+# maximum temperature after unit conversion (Celsius). Values outside these
+# ranges indicate a unit error or corrupted file, not an extreme climate event.
+# Adjust if applying the pipeline to regions with more extreme climates.
+validation:
+  t2m_min_k: 223.15   # −50 °C: absolute lower bound for Baltic raw temperature
+  t2m_max_k: 323.15   # +50 °C: absolute upper bound for Baltic raw temperature
+  tx_min_c: -45.0     # tighter bound on derived TX — resampling artefacts would
+  tx_max_c:  45.0     # show up here before passing the raw-file check
