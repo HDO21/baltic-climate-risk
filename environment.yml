@@ -1,0 +1,50 @@
+name: climate-risk
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+
+  # Data processing
+  - xarray
+  - dask
+  - netCDF4
+  - cfgrib
+  - pandas
+  - pyarrow
+
+  # Climate-specific
+  - xclim
+
+  # Geospatial
+  - geopandas
+  - pyproj
+  - shapely
+  - fiona
+  - gdal
+
+  # Visualization & Dashboard
+  - plotly
+  - streamlit
+  - folium
+  - streamlit-folium
+
+  # Utilities
+  - geopy
+  - pyyaml
+  - python-dotenv
+  - cdsapi
+
+  # Development & Testing
+  - pytest
+  - ruff
+  - mypy
+
+  # Package management
+  - pip
+
+  # Optional: pip packages not available via conda-forge
+  - pip:
+    - cdsapi
+    - streamlit-plotly-events
