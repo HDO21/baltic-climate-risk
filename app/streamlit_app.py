@@ -8,11 +8,13 @@ derived from ERA5-Land data. Run with:
     streamlit run app/streamlit_app.py
 """
 
+import folium
 import yaml
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -37,7 +39,6 @@ METRICS = {
         "parquet":         ROOT / "data/processed/heat_days_grid_ee.parquet",
         "threshold_label": f"TX ≥ {_THRESHOLD_HEAT_C:.0f} °C",
         "bar_color":       "#d62728",
-        "point_color":     "#1f77b4",
         "y_label":         "Extreme heat days",
         "pipeline_flag":   "heat_days",
     },
@@ -47,7 +48,6 @@ METRICS = {
         "parquet":         ROOT / "data/processed/frost_days_grid_ee.parquet",
         "threshold_label": f"TN < {_THRESHOLD_FROST_C:.0f} °C",
         "bar_color":       "rgb(24, 56, 245)",
-        "point_color":     "rgb(100, 149, 237)",
         "y_label":         "Frost days",
         "pipeline_flag":   "frost_days",
     },
@@ -249,6 +249,19 @@ if lon_raw.strip() or lat_raw.strip():
                 f"(input: {lat:.2f}°N, {lon:.2f}°E)"
             )
 
+            _fmap = folium.Map(
+                location=[nearest_lat, nearest_lon],
+                zoom_start=15,
+                zoom_control=False,
+                scrollWheelZoom=False,
+                dragging=False,
+                doubleClickZoom=False,
+                touchZoom=False,
+                keyboard=False,
+            )
+            folium.Marker([nearest_lat, nearest_lon]).add_to(_fmap)
+            components.html(_fmap._repr_html_(), height=300)
+
             col1p, col2p = st.columns(2)
             col1p.metric(
                 label=f"Mean {metric_name.lower()}/year — grid cell",
@@ -275,7 +288,7 @@ if lon_raw.strip() or lat_raw.strip():
                 x=df_pt_done["year"],
                 y=df_pt_done[col],
                 name="Processed",
-                marker_color=m["point_color"],
+                marker_color=m["bar_color"],
                 hovertemplate="%{x}: <b>%{y:.2f}</b> days<extra></extra>",
             ))
             if not df_pt_pending.empty:
