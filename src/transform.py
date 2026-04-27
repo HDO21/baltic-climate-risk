@@ -103,6 +103,32 @@ def count_heat_days_per_gridpoint(tx_c: xr.DataArray, threshold_c: float,
     return heat_mask.sum(dim=time_dim)
 
 
+def compute_annual_grid(year: int, raw_dir: Path, threshold_c: float) -> xr.DataArray:
+    """
+    Process all 12 monthly NetCDF files for a given year and return a
+    DataArray of shape (n_lat, n_lon) with the annual heat-day count per grid
+    point. Sea cells that are always NaN in ERA5-Land remain NaN in the output.
+
+    Processing one month at a time caps peak memory to one month of hourly
+    data rather than requiring a full year to be held in RAM simultaneously.
+    """
+    logger.info("[%d] computing annual grid", year)
+    annual_count = None
+
+    for month in range(1, 13):
+        nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
+        ds, time_dim = open_monthly_nc(nc_path)
+        tx_c = hourly_to_daily_tx(ds["t2m"], time_dim)
+        monthly_count = count_heat_days_per_gridpoint(tx_c, threshold_c, time_dim)
+        annual_count = (
+            monthly_count if annual_count is None
+            else annual_count + monthly_count
+        )
+        ds.close()
+
+    return annual_count
+
+
 def process_year(year: int, raw_dir: Path, threshold_c: float) -> dict:
     """
     Process all 12 monthly NetCDF files for a given year and return a dict
@@ -113,27 +139,7 @@ def process_year(year: int, raw_dir: Path, threshold_c: float) -> dict:
     to one month of hourly data at a time rather than loading a full year.
     """
     logger.info("[%d] starting transform", year)
-
-    # Running total of heat days per grid point; shape (n_lat, n_lon).
-    # Initialised to None so the first month's DataArray sets the coordinates.
-    annual_count = None
-
-    for month in range(1, 13):
-        # Filename matches the pattern written by load_data.download_month.
-        nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
-        ds, time_dim = open_monthly_nc(nc_path)
-
-        # "t2m" is the ERA5-Land short name for 2m_temperature (in Kelvin).
-        tx_c = hourly_to_daily_tx(ds["t2m"], time_dim)
-
-        monthly_count = count_heat_days_per_gridpoint(tx_c, threshold_c, time_dim)
-
-        # Accumulate: add this month's counts to the running annual total.
-        annual_count = (
-            monthly_count if annual_count is None
-            else annual_count + monthly_count
-        )
-        ds.close()
+    annual_count = compute_annual_grid(year, raw_dir, threshold_c)
 
     # Reduce (n_lat, n_lon) → scalar by averaging over all country grid points.
     # The bounding box includes sea cells (stored as NaN in ERA5-Land), which

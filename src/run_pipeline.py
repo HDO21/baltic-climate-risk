@@ -31,9 +31,23 @@ from load_data import (
     load_config, download_year,
 )
 from validate  import validate_raw_file, validate_annual_result
-from transform import process_year
+from transform import compute_annual_grid
 
 logger = logging.getLogger(__name__)
+
+
+def _write_grid_parquet(annual_grid, year: int, path) -> None:
+    """Upsert one year's per-grid-point heat-day counts into the grid Parquet."""
+    df_year = annual_grid.to_dataframe(name="extreme_heat_days").reset_index()
+    df_year = df_year.assign(year=year).dropna(subset=["extreme_heat_days"])
+
+    if path.exists():
+        df_existing = pd.read_parquet(path)
+        df_existing = df_existing[df_existing["year"] != year]
+        df_year = pd.concat([df_existing, df_year], ignore_index=True)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df_year.to_parquet(path, index=False)
 
 
 def main():
@@ -72,6 +86,7 @@ def main():
     logger.info("=" * 55)
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    grid_parquet = OUT_CSV.parent / f"heat_days_grid_{country_code.lower()}.parquet"
 
     # Load any previously saved results so partial runs accumulate correctly
     # without re-downloading or re-processing already-completed years.
@@ -83,8 +98,30 @@ def main():
     rows   = []
 
     for year in years:
-        if year in existing:
-            logger.info("[%d] already in output CSV — skipping", year)
+        # Determine whether the grid Parquet already contains this year.
+        parquet_has_year = False
+        if grid_parquet.exists():
+            try:
+                _yrs = pd.read_parquet(grid_parquet, columns=["year"])["year"].values
+                parquet_has_year = int(year) in _yrs
+            except Exception:
+                pass
+
+        if year in existing and parquet_has_year:
+            logger.info("[%d] already in output CSV and grid — skipping", year)
+            rows.append({"year": year, "extreme_heat_days": existing[year]})
+            continue
+
+        if year in existing and not parquet_has_year:
+            # CSV has this year but the grid Parquet is missing or incomplete.
+            # Raw files are cached, so only the transform stage is needed.
+            logger.info("[%d] in CSV but grid missing — recomputing grid", year)
+            try:
+                annual_grid = compute_annual_grid(year, raw_dir, threshold_c)
+                _write_grid_parquet(annual_grid, year, grid_parquet)
+                logger.info("[%d] grid saved → %s", year, grid_parquet)
+            except Exception as exc:
+                logger.error("[%d] grid recompute failed: %s", year, exc)
             rows.append({"year": year, "extreme_heat_days": existing[year]})
             continue
 
@@ -112,7 +149,9 @@ def main():
         # ── Stage 3: TRANSFORM ─────────────────────────────────────────────────
         logger.info("[%d] TRANSFORM", year)
         try:
-            row = process_year(year, raw_dir, threshold_c)
+            annual_grid    = compute_annual_grid(year, raw_dir, threshold_c)
+            mean_val       = float(annual_grid.mean().values)
+            row            = {"year": year, "extreme_heat_days": round(mean_val, 2)}
         except Exception as exc:
             logger.error("[%d] transform failed — skipping year: %s", year, exc)
             continue
@@ -124,6 +163,13 @@ def main():
             logger.error("[%d] result validation failed — skipping: %s",
                          year, result_check["issues"])
             continue
+
+        # ── Write grid Parquet ─────────────────────────────────────────────────
+        try:
+            _write_grid_parquet(annual_grid, year, grid_parquet)
+            logger.info("[%d] grid saved → %s", year, grid_parquet)
+        except Exception as exc:
+            logger.warning("[%d] grid Parquet write failed (non-fatal): %s", year, exc)
 
         rows.append(row)
 
