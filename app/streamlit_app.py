@@ -72,7 +72,7 @@ def _parse_coord(text: str):
 st.set_page_config(
     page_title="Baltic Climate Risk",
     page_icon="🌡",
-    layout="centered",
+    layout="wide",
 )
 
 st.title("Baltic Climate Risk — Estonia")
@@ -204,7 +204,7 @@ if lon_raw.strip() or lat_raw.strip():
     lat = _parse_coord(lat_raw)
 
     if lon is None or lat is None:
-        st.warning("Enter a valid number for both X and Y. Decimals may use '.' or ','.")
+        st.warning("Enter a valid number for both X and Y.")
     elif not (_S <= lat <= _N and _W <= lon <= _E):
         st.info(
             f"Coordinates ({lat_raw}, {lon_raw}) are not in the risk analysis area. "
