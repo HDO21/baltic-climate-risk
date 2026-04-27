@@ -1,8 +1,11 @@
-# Data files (large, reproducible from pipeline)
-data/
+# Raw and intermediate data (large, reproducible from pipeline)
+data/raw/
 *.nc
 *.grib
 *.parquet
+
+# data/processed/ is intentionally NOT ignored so pre-computed CSVs
+# can be committed and served directly by Streamlit Cloud
 
 # Secrets
 .env
