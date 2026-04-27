@@ -41,6 +41,14 @@ CONFIG_PATH = ROOT / "config/config.yaml"
 RAW_DIR     = ROOT / "data/raw/era5land"
 OUT_CSV     = ROOT / "data/processed/estonia_extreme_heat_days.csv"
 
+# ── CDS variable registry ─────────────────────────────────────────────────────
+# Maps CDS long name → ERA5-Land NetCDF short name used in filenames.
+# Add an entry here when a new variable is needed by the pipeline.
+VAR_SHORT = {
+    "2m_temperature":     "t2m",
+    "total_precipitation": "tp",
+}
+
 # ── CDS request parameters ────────────────────────────────────────────────────
 
 # WMO standard 30-year reference period for current-climate baselines.
@@ -111,9 +119,10 @@ def _retrieve_with_retry(
 
 
 def download_month(client: cdsapi.Client, year: int, month: int,
-                   area: list, raw_dir: Path) -> Path:
+                   area: list, raw_dir: Path,
+                   variable: str = "2m_temperature") -> Path:
     """
-    Download one calendar month of ERA5-Land hourly 2m_temperature for the
+    Download one calendar month of an ERA5-Land hourly variable for the
     given bounding box.
 
     Files are cached by filename: if the expected NetCDF already exists on disk
@@ -121,21 +130,29 @@ def download_month(client: cdsapi.Client, year: int, month: int,
 
     Parameters
     ----------
-    area    : [N, W, S, E] in decimal degrees — use get_country_area() or
-              supply directly from config.
-    raw_dir : destination directory for this country's NetCDF files.
+    area     : [N, W, S, E] in decimal degrees — use get_country_area() or
+               supply directly from config.
+    raw_dir  : destination directory for this country's NetCDF files.
+    variable : CDS long name of the ERA5-Land variable (must be a key in
+               VAR_SHORT). Defaults to "2m_temperature".
 
     Returns the path to the downloaded (or cached) NetCDF file.
     """
+    if variable not in VAR_SHORT:
+        raise ValueError(
+            f"Unknown variable '{variable}'. Known: {list(VAR_SHORT)}"
+        )
+
     raw_dir.mkdir(parents=True, exist_ok=True)
-    nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
+    short   = VAR_SHORT[variable]
+    nc_path = raw_dir / f"era5land_{short}_{year}_{month:02d}.nc"
 
     if nc_path.exists():
         size_mb = nc_path.stat().st_size / 1e6
-        logger.info("[%d-%02d] cached (%.0f MB)", year, month, size_mb)
+        logger.info("[%d-%02d] %s cached (%.0f MB)", year, month, short, size_mb)
         return nc_path
 
-    logger.info("[%d-%02d] submitting CDS request …", year, month)
+    logger.info("[%d-%02d] submitting CDS request (%s) …", year, month, short)
     _retrieve_with_retry(
         client,
         "reanalysis-era5-land",
@@ -143,9 +160,7 @@ def download_month(client: cdsapi.Client, year: int, month: int,
             # Only "reanalysis" is available for ERA5-Land (no ensemble members).
             "product_type": "reanalysis",
 
-            # "2m_temperature" is the CDS long name; the NetCDF variable will be
-            # stored under the short name "t2m" in Kelvin.
-            "variable": "2m_temperature",
+            "variable": variable,
 
             "year":  str(year),
             "month": f"{month:02d}",
@@ -167,15 +182,16 @@ def download_month(client: cdsapi.Client, year: int, month: int,
         nc_path,
     )
     size_mb = nc_path.stat().st_size / 1e6
-    logger.info("[%d-%02d] downloaded (%.0f MB)", year, month, size_mb)
+    logger.info("[%d-%02d] %s downloaded (%.0f MB)", year, month, short, size_mb)
     return nc_path
 
 
 def download_year(client: cdsapi.Client, year: int,
-                  area: list, raw_dir: Path) -> list:
+                  area: list, raw_dir: Path,
+                  variable: str = "2m_temperature") -> list:
     """Download all 12 months for a given year; return the list of NetCDF paths."""
     return [
-        download_month(client, year, month, area, raw_dir)
+        download_month(client, year, month, area, raw_dir, variable)
         for month in range(1, 13)
     ]
 
@@ -195,16 +211,19 @@ def main():
                         help="ISO 3166-1 alpha-2 country code (default: EE)")
     parser.add_argument("--year", type=int, default=None,
                         help="Download a single year only")
-    args    = parser.parse_args()
-    years   = [args.year] if args.year else REFERENCE_YEARS
-    area    = get_country_area(args.country)
-    raw_dir = RAW_DIR / args.country.lower()
-    client  = cdsapi.Client()
+    parser.add_argument("--variable", default="2m_temperature",
+                        choices=list(VAR_SHORT),
+                        help="ERA5-Land variable to download (default: 2m_temperature)")
+    args     = parser.parse_args()
+    years    = [args.year] if args.year else REFERENCE_YEARS
+    area     = get_country_area(args.country)
+    raw_dir  = RAW_DIR / args.country.lower()
+    client   = cdsapi.Client()
 
     for year in years:
-        logger.info("[%d] downloading …", year)
+        logger.info("[%d] downloading %s …", year, args.variable)
         try:
-            download_year(client, year, area, raw_dir)
+            download_year(client, year, area, raw_dir, args.variable)
         except Exception as exc:
             logger.error("[%d] download failed: %s", year, exc)
 
