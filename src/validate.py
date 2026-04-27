@@ -20,12 +20,15 @@ touching source code.
 """
 
 import sys
+import logging
 import argparse
 import calendar
 import xarray as xr
 from pathlib import Path
 
 from load_data import RAW_DIR, REFERENCE_YEARS, load_config
+
+logger = logging.getLogger(__name__)
 
 
 def _load_bounds() -> dict:
@@ -50,8 +53,10 @@ def validate_raw_file(nc_path: Path, year: int, month: int,
       5. Raw Kelvin values are within the plausibility range from config.yaml
          (validation.t2m_min_k / validation.t2m_max_k). Values outside this
          range indicate a unit mismatch or corrupted file, not a real extreme.
-      6. No NaN / fill values in the t2m variable. ERA5-Land provides complete
-         coverage for Baltic bounding boxes; any NaN flags a partial download.
+      6. No intermittent NaN values in t2m. ERA5-Land stores sea/water cells as
+         NaN in every timestep (land-sea mask) — these are expected and ignored.
+         Only NaN values that appear at some timesteps but not others (temporal
+         gaps in land cells) are flagged, as they would corrupt heat-day counts.
 
     Parameters
     ----------
@@ -109,7 +114,7 @@ def validate_raw_file(nc_path: Path, year: int, month: int,
                 f"({t_max - 273.15:.1f} °C)"
             )
 
-        # ── Check 6: NaN / fill values ────────────────────────────────────────
+        # ── Check 6: intermittent NaN in land cells ───────────────────────────
         # ERA5-Land is a land-only product: sea and inland-water grid cells are
         # stored as NaN in every timestep (the land-sea mask). These are expected
         # and must not be flagged as errors.
@@ -118,9 +123,9 @@ def validate_raw_file(nc_path: Path, year: int, month: int,
         # has valid data in some timesteps but NaN in others. That indicates a
         # genuine temporal gap in a land cell, which would silently corrupt the
         # daily-maximum resampling and the heat-day count.
-        nan_spatial   = t2m.isnull().sum(dim=time_dim)   # NaN timestep count per cell
-        n_steps       = ds.sizes[time_dim]
-        intermittent  = int(((nan_spatial > 0) & (nan_spatial < n_steps)).sum())
+        nan_spatial  = t2m.isnull().sum(dim=time_dim)   # NaN timestep count per cell
+        n_steps      = ds.sizes[time_dim]
+        intermittent = int(((nan_spatial > 0) & (nan_spatial < n_steps)).sum())
 
         if intermittent > 0:
             issues.append(
@@ -129,6 +134,12 @@ def validate_raw_file(nc_path: Path, year: int, month: int,
             )
 
     ds.close()
+
+    if issues:
+        logger.warning("[%d-%02d] validation failed: %s", year, month, "; ".join(issues))
+    else:
+        logger.info("[%d-%02d] raw validation passed", year, month)
+
     return {"passed": len(issues) == 0, "issues": issues}
 
 
@@ -179,6 +190,9 @@ def validate_tx(tx_c: xr.DataArray, year: int, month: int,
             f"{nan_count} NaN values in derived TX for {year}-{month:02d}"
         )
 
+    if issues:
+        logger.warning("[%d-%02d] TX validation failed: %s", year, month, "; ".join(issues))
+
     return {"passed": len(issues) == 0, "issues": issues}
 
 
@@ -202,6 +216,9 @@ def validate_annual_result(row: dict) -> dict:
         if hd > 366:
             issues.append(f"Heat day count exceeds days in a leap year: {hd}")
 
+    if issues:
+        logger.warning("Result validation failed for year %s: %s", row.get("year"), issues)
+
     return {"passed": len(issues) == 0, "issues": issues}
 
 
@@ -209,6 +226,12 @@ def validate_annual_result(row: dict) -> dict:
 
 def main():
     """Validate all cached raw NetCDF files for a country and print a report."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(
         description="Validate cached ERA5-Land files for the Baltic pipeline"
     )
@@ -226,23 +249,18 @@ def main():
         for month in range(1, 13):
             nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
             if not nc_path.exists():
-                print(f"  [{year}-{month:02d}] MISSING — not yet downloaded")
+                logger.warning("[%d-%02d] MISSING — not yet downloaded", year, month)
                 continue
 
             result = validate_raw_file(nc_path, year, month, bounds)
-            status = "OK  " if result["passed"] else "FAIL"
-            print(f"  [{year}-{month:02d}] {status}", end="")
             if result["issues"]:
-                print(f"  →  {'; '.join(result['issues'])}", end="")
                 failed.append((year, month, result["issues"]))
-            print()
 
-    print()
     if failed:
-        print(f"FAILED: {len(failed)} file(s) have issues — see above")
+        logger.error("FAILED: %d file(s) have issues — re-run with DEBUG for details", len(failed))
         sys.exit(1)
     else:
-        print("All checked files passed validation.")
+        logger.info("All checked files passed validation.")
 
 
 if __name__ == "__main__":

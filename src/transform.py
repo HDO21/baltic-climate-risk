@@ -7,7 +7,7 @@ Responsibilities:
   - Convert temperature from Kelvin to Celsius
   - Derive daily maximum temperature (TX) by resampling 24 hourly values
   - Count extreme heat days using the ETCCDI per-grid-point approach
-  - Aggregate per-grid-point annual counts to a single spatial mean for Estonia
+  - Aggregate per-grid-point annual counts to a single spatial mean for the country
   - Write annual results to the processed output CSV
 
 ETCCDI metric — Extreme Heat Days (TX >= threshold):
@@ -26,16 +26,18 @@ ETCCDI metric — Extreme Heat Days (TX >= threshold):
 
   End of year:
     Step 5  sum over 12 months            annual count per grid point  (lat, lon)
-    Step 6  mean over (lat, lon)          scalar: mean annual heat days for Estonia
+    Step 6  mean over (lat, lon)          scalar: mean annual heat days for country
 """
 
-import sys
+import logging
 import argparse
 import xarray as xr
 import pandas as pd
 from pathlib import Path
 
 from load_data import RAW_DIR, OUT_CSV, REFERENCE_YEARS, load_config
+
+logger = logging.getLogger(__name__)
 
 
 # ── Functions ─────────────────────────────────────────────────────────────────
@@ -63,7 +65,7 @@ def hourly_to_daily_tx(t2m_k: xr.DataArray, time_dim: str) -> xr.DataArray:
         is a simple offset with no scaling: T[°C] = T[K] − 273.15.
 
     Resampling to TX:
-        .resample({"time_dim": "1D"}) groups all timestamps that share the same
+        .resample({time_dim: "1D"}) groups all timestamps that share the same
         calendar date (in UTC), then .max() selects the highest value across all
         24 hourly readings in that day. This gives TX: the daily maximum 2m
         temperature as defined by ETCCDI.
@@ -87,8 +89,8 @@ def count_heat_days_per_gridpoint(tx_c: xr.DataArray, threshold_c: float,
     Returns a DataArray of shape (n_lat, n_lon) — one integer count per grid cell.
 
     Why per-grid-point rather than spatial-mean-first:
-        Averaging TX over Estonia before applying the threshold would smooth out
-        local hot spots. A day where one corner of Estonia reaches 31 °C but the
+        Averaging TX over the country before applying the threshold would smooth
+        out local hot spots. A day where one grid cell reaches 31 °C but the
         rest stays at 27 °C would be missed, even though real heat stress occurred.
         Counting per grid point first, then averaging the counts, correctly
         captures those localised extremes.
@@ -104,18 +106,21 @@ def count_heat_days_per_gridpoint(tx_c: xr.DataArray, threshold_c: float,
 def process_year(year: int, raw_dir: Path, threshold_c: float) -> dict:
     """
     Process all 12 monthly NetCDF files for a given year and return a dict
-    with the annual extreme heat day count (spatial mean over Estonia grid).
+    with the annual extreme heat day count (spatial mean over the country grid).
 
     Monthly files are processed sequentially and the per-grid-point counts are
     accumulated before the final spatial average. This keeps peak memory use
     to one month of hourly data at a time rather than loading a full year.
     """
+    logger.info("[%d] starting transform", year)
+
     # Running total of heat days per grid point; shape (n_lat, n_lon).
     # Initialised to None so the first month's DataArray sets the coordinates.
     annual_count = None
 
     for month in range(1, 13):
-        nc_path = raw_dir / f"era5land_t2m_ee_{year}_{month:02d}.nc"
+        # Filename matches the pattern written by load_data.download_month.
+        nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
         ds, time_dim = open_monthly_nc(nc_path)
 
         # "t2m" is the ERA5-Land short name for 2m_temperature (in Kelvin).
@@ -130,28 +135,38 @@ def process_year(year: int, raw_dir: Path, threshold_c: float) -> dict:
         )
         ds.close()
 
-    # Reduce (n_lat, n_lon) → scalar by averaging over all Estonia grid points.
-    # The bounding box includes a few sea cells, but their heat-day counts are
-    # indistinguishable from adjacent land cells at this metric level, so no
-    # land-sea mask is applied at this stage.
+    # Reduce (n_lat, n_lon) → scalar by averaging over all country grid points.
+    # The bounding box includes sea cells (stored as NaN in ERA5-Land), which
+    # are naturally excluded from the mean by xarray's default skipna=True.
     mean_heat_days = float(annual_count.mean().values)
+    result = {"year": year, "extreme_heat_days": round(mean_heat_days, 2)}
 
-    return {"year": year, "extreme_heat_days": round(mean_heat_days, 2)}
+    logger.info("[%d] transform complete — extreme heat days: %.2f", year, mean_heat_days)
+    return result
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     """Process all downloaded years and write results to the output CSV."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(
         description="Compute extreme heat days from cached ERA5-Land files"
     )
+    parser.add_argument("--country", default="EE",
+                        help="ISO 3166-1 alpha-2 country code (default: EE)")
     parser.add_argument("--year", type=int, default=None,
                         help="Process a single year only")
     args        = parser.parse_args()
     cfg         = load_config()
     threshold_c = float(cfg["metrics"]["heat_days"]["threshold_tx_degC"])
     years       = [args.year] if args.year else REFERENCE_YEARS
+    raw_dir     = RAW_DIR / args.country.lower()
 
     # Load any previously computed years to support incremental runs.
     existing = {}
@@ -161,22 +176,20 @@ def main():
     rows = []
     for year in years:
         if year in existing:
-            print(f"  [{year}] already processed — skipping")
+            logger.info("[%d] already processed — skipping", year)
             rows.append({"year": year, "extreme_heat_days": existing[year]})
             continue
         try:
-            print(f"  [{year}] transforming …")
-            row = process_year(year, RAW_DIR, threshold_c)
+            row = process_year(year, raw_dir, threshold_c)
             rows.append(row)
-            print(f"  [{year}] extreme heat days: {row['extreme_heat_days']:.2f}")
         except Exception as exc:
-            print(f"  [{year}] ERROR: {exc}", file=sys.stderr)
+            logger.error("[%d] transform failed: %s", year, exc)
 
     if rows:
         OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
         df.to_csv(OUT_CSV, index=False)
-        print(f"\nSaved → {OUT_CSV}")
+        logger.info("Saved → %s", OUT_CSV)
 
 
 if __name__ == "__main__":

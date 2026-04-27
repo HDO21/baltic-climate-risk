@@ -21,19 +21,28 @@ Usage:
 """
 
 import sys
+import logging
 import argparse
 import pandas as pd
 import cdsapi
 
 from load_data import (
     REFERENCE_YEARS, RAW_DIR, OUT_CSV,
-    load_config, get_country_area, download_year,
+    load_config, download_year,
 )
 from validate  import validate_raw_file, validate_annual_result
 from transform import process_year
 
+logger = logging.getLogger(__name__)
+
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(description="ERA5-Land extreme heat days pipeline")
     parser.add_argument(
         "--country", default="EE",
@@ -44,25 +53,23 @@ def main():
         "--year", type=int, default=None,
         help="Run for a single year only (default: full 1991–2020 reference period)"
     )
-    args    = parser.parse_args()
-    cfg     = load_config()
+    args = parser.parse_args()
+    cfg  = load_config()
 
     country_code = args.country.upper()
     country_name = cfg["countries"][country_code]["name"]
     area         = cfg["countries"][country_code]["area"]    # [N, W, S, E]
     raw_dir      = RAW_DIR / country_code.lower()
     threshold_c  = float(cfg["metrics"]["heat_days"]["threshold_tx_degC"])
+    bounds       = cfg["validation"]
     years        = [args.year] if args.year else REFERENCE_YEARS
 
-    print("=" * 60)
-    print(f"  Extreme Heat Days — {country_name}  |  ERA5-Land")
-    if len(years) > 1:
-        print(f"  Years  : {years[0]}–{years[-1]}")
-    else:
-        print(f"  Year   : {years[0]}")
-    print(f"  Metric : mean annual days with TX ≥ {threshold_c} °C")
-    print(f"  Area   : {area}  (N, W, S, E)")
-    print("=" * 60)
+    logger.info("=" * 55)
+    logger.info("Extreme Heat Days — %s | ERA5-Land", country_name)
+    logger.info("Years  : %d–%d", years[0], years[-1])
+    logger.info("Metric : mean annual days with TX >= %.0f °C", threshold_c)
+    logger.info("Area   : %s  (N, W, S, E)", area)
+    logger.info("=" * 55)
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
 
@@ -77,72 +84,65 @@ def main():
 
     for year in years:
         if year in existing:
-            print(f"\n  [{year}] already in output CSV — skipping")
+            logger.info("[%d] already in output CSV — skipping", year)
             rows.append({"year": year, "extreme_heat_days": existing[year]})
             continue
 
         # ── Stage 1: LOAD ──────────────────────────────────────────────────────
-        print(f"\n  [{year}] ── LOAD ──────────────────────────────────────────")
+        logger.info("[%d] LOAD", year)
         try:
             download_year(client, year, area, raw_dir)
         except Exception as exc:
-            print(f"  [{year}] download failed — skipping year: {exc}", file=sys.stderr)
+            logger.error("[%d] download failed — skipping year: %s", year, exc)
             continue
 
         # ── Stage 2: VALIDATE raw files ────────────────────────────────────────
-        print(f"  [{year}] ── VALIDATE (raw) ───────────────────────────────")
-        bounds = cfg["validation"]
+        logger.info("[%d] VALIDATE (raw)", year)
         raw_ok = True
         for month in range(1, 13):
             nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
             result  = validate_raw_file(nc_path, year, month, bounds)
-            status  = "OK  " if result["passed"] else "FAIL"
-            print(f"    [{year}-{month:02d}] {status}", end="")
-            if result["issues"]:
-                print(f"  →  {'; '.join(result['issues'])}", end="")
+            if not result["passed"]:
                 raw_ok = False
-            print()
 
         if not raw_ok:
-            print(f"  [{year}] raw validation failed — skipping transform", file=sys.stderr)
+            logger.error("[%d] raw validation failed — skipping transform", year)
             continue
 
         # ── Stage 3: TRANSFORM ─────────────────────────────────────────────────
-        print(f"  [{year}] ── TRANSFORM ────────────────────────────────────")
+        logger.info("[%d] TRANSFORM", year)
         try:
             row = process_year(year, raw_dir, threshold_c)
         except Exception as exc:
-            print(f"  [{year}] transform failed — skipping year: {exc}", file=sys.stderr)
+            logger.error("[%d] transform failed — skipping year: %s", year, exc)
             continue
 
         # ── Stage 4: VALIDATE result ───────────────────────────────────────────
-        print(f"  [{year}] ── VALIDATE (result) ─────────────────────────────")
+        logger.info("[%d] VALIDATE (result)", year)
         result_check = validate_annual_result(row)
         if not result_check["passed"]:
-            print(
-                f"  [{year}] result validation failed: {result_check['issues']}",
-                file=sys.stderr,
-            )
+            logger.error("[%d] result validation failed — skipping: %s",
+                         year, result_check["issues"])
             continue
 
         rows.append(row)
-        print(f"  [{year}] extreme heat days: {row['extreme_heat_days']:.2f}")
 
     if not rows:
-        print("No data processed — check errors above.", file=sys.stderr)
+        logger.error("No data processed — check errors above.")
         sys.exit(1)
 
     df = pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
     df.to_csv(OUT_CSV, index=False)
 
-    print("\n" + "=" * 60)
-    print(f"  Output : {OUT_CSV}")
-    print("=" * 60)
-    print(df.to_string(index=False))
+    logger.info("=" * 55)
+    logger.info("Output : %s", OUT_CSV)
+    logger.info("=" * 55)
+    for _, r in df.iterrows():
+        logger.info("  %d  %.2f days", r["year"], r["extreme_heat_days"])
     if len(df) > 1:
-        print(f"\n  Mean : {df['extreme_heat_days'].mean():.2f} days/year")
-        print(f"  Range: {df['extreme_heat_days'].min():.0f} – "
-              f"{df['extreme_heat_days'].max():.0f} days/year")
+        logger.info("Mean : %.2f days/year", df["extreme_heat_days"].mean())
+        logger.info("Range: %.0f – %.0f days/year",
+                    df["extreme_heat_days"].min(), df["extreme_heat_days"].max())
 
 
 if __name__ == "__main__":
