@@ -191,11 +191,11 @@ st.caption(
     "ERA5-Land grid point (0.1° resolution)."
 )
 
-col_lon, col_lat = st.columns(2)
-with col_lon:
+_input_col, _map_col = st.columns([1, 2])
+
+with _input_col:
     lon_raw = st.text_input("X — Longitude", placeholder="25.8")
     st.caption(f"Sample: 25.8  ·  Valid range: {_W}°–{_E}°E")
-with col_lat:
     lat_raw = st.text_input("Y — Latitude", placeholder="58.7")
     st.caption(f"Sample: 58.7  ·  Valid range: {_S}°–{_N}°N")
 
@@ -244,11 +244,7 @@ if lon_raw.strip() or lat_raw.strip():
             )
             point_mean = df_point_full[col].mean()
 
-            st.write(
-                f"Nearest land grid cell: **{nearest_lat:.1f}°N, {nearest_lon:.1f}°E** "
-                f"(input: {lat:.2f}°N, {lon:.2f}°E)"
-            )
-
+            _fig = folium.Figure(width="100%", height=350)
             _fmap = folium.Map(
                 location=[nearest_lat, nearest_lon],
                 zoom_start=15,
@@ -259,8 +255,14 @@ if lon_raw.strip() or lat_raw.strip():
                 touchZoom=False,
                 keyboard=False,
             )
+            _fig.add_child(_fmap)
             folium.Marker([nearest_lat, nearest_lon]).add_to(_fmap)
-            components.html(_fmap._repr_html_(), height=300)
+            with _map_col:
+                st.write(
+                    f"Nearest land grid cell: **{nearest_lat:.1f}°N, {nearest_lon:.1f}°E** "
+                    f"(input: {lat:.2f}°N, {lon:.2f}°E)"
+                )
+                components.html(_fig._repr_html_(), height=350)
 
             col1p, col2p = st.columns(2)
             col1p.metric(
