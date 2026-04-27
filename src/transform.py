@@ -39,6 +39,12 @@ from load_data import RAW_DIR, OUT_CSV, REFERENCE_YEARS, load_config
 
 logger = logging.getLogger(__name__)
 
+# Maps metric key → output CSV column name.
+METRIC_COL = {
+    "heat_days":  "extreme_heat_days",
+    "frost_days": "frost_days",
+}
+
 
 # ── Functions ─────────────────────────────────────────────────────────────────
 
@@ -81,6 +87,30 @@ def hourly_to_daily_tx(t2m_k: xr.DataArray, time_dim: str) -> xr.DataArray:
     return tx_c
 
 
+def hourly_to_daily_tn(t2m_k: xr.DataArray, time_dim: str) -> xr.DataArray:
+    """
+    Convert hourly 2m_temperature from Kelvin to Celsius, then resample to
+    daily minimum temperature (TN).
+
+    Parallel to hourly_to_daily_tx but uses .min() instead of .max().
+    Returns a DataArray of shape (n_days, n_lat, n_lon) in degrees Celsius.
+    """
+    t2m_c = t2m_k - 273.15
+    return t2m_c.resample({time_dim: "1D"}).min()
+
+
+def count_frost_days_per_gridpoint(tn_c: xr.DataArray, threshold_c: float,
+                                    time_dim: str) -> xr.DataArray:
+    """
+    Count the number of days where TN < threshold_c at each grid point.
+
+    Returns a DataArray of shape (n_lat, n_lon) — one integer count per grid cell.
+    Uses strict less-than (<) matching the ETCCDI FD0 definition (TN < 0 °C).
+    """
+    frost_mask = tn_c < threshold_c
+    return frost_mask.sum(dim=time_dim)
+
+
 def count_heat_days_per_gridpoint(tx_c: xr.DataArray, threshold_c: float,
                                    time_dim: str) -> xr.DataArray:
     """
@@ -103,23 +133,37 @@ def count_heat_days_per_gridpoint(tx_c: xr.DataArray, threshold_c: float,
     return heat_mask.sum(dim=time_dim)
 
 
-def compute_annual_grid(year: int, raw_dir: Path, threshold_c: float) -> xr.DataArray:
+def compute_annual_grid(year: int, raw_dir: Path, threshold_c: float,
+                        metric: str = "heat_days") -> xr.DataArray:
     """
     Process all 12 monthly NetCDF files for a given year and return a
-    DataArray of shape (n_lat, n_lon) with the annual heat-day count per grid
-    point. Sea cells that are always NaN in ERA5-Land remain NaN in the output.
+    DataArray of shape (n_lat, n_lon) with the annual day-count per grid point
+    for the requested metric. Sea cells that are always NaN in ERA5-Land remain
+    NaN in the output.
+
+    metric : "heat_days" — TX >= threshold_c (daily maximum temperature)
+             "frost_days" — TN < threshold_c  (daily minimum temperature)
 
     Processing one month at a time caps peak memory to one month of hourly
     data rather than requiring a full year to be held in RAM simultaneously.
     """
-    logger.info("[%d] computing annual grid", year)
+    if metric not in METRIC_COL:
+        raise ValueError(f"Unknown metric '{metric}'. Known: {list(METRIC_COL)}")
+
+    logger.info("[%d] computing annual grid (%s)", year, metric)
     annual_count = None
 
     for month in range(1, 13):
         nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
         ds, time_dim = open_monthly_nc(nc_path)
-        tx_c = hourly_to_daily_tx(ds["t2m"], time_dim)
-        monthly_count = count_heat_days_per_gridpoint(tx_c, threshold_c, time_dim)
+
+        if metric == "heat_days":
+            daily_extreme = hourly_to_daily_tx(ds["t2m"], time_dim)
+            monthly_count = count_heat_days_per_gridpoint(daily_extreme, threshold_c, time_dim)
+        else:  # frost_days
+            daily_extreme = hourly_to_daily_tn(ds["t2m"], time_dim)
+            monthly_count = count_frost_days_per_gridpoint(daily_extreme, threshold_c, time_dim)
+
         annual_count = (
             monthly_count if annual_count is None
             else annual_count + monthly_count
@@ -129,25 +173,27 @@ def compute_annual_grid(year: int, raw_dir: Path, threshold_c: float) -> xr.Data
     return annual_count
 
 
-def process_year(year: int, raw_dir: Path, threshold_c: float) -> dict:
+def process_year(year: int, raw_dir: Path, threshold_c: float,
+                 metric: str = "heat_days") -> dict:
     """
     Process all 12 monthly NetCDF files for a given year and return a dict
-    with the annual extreme heat day count (spatial mean over the country grid).
+    with the annual day-count (spatial mean over the country grid).
 
     Monthly files are processed sequentially and the per-grid-point counts are
     accumulated before the final spatial average. This keeps peak memory use
     to one month of hourly data at a time rather than loading a full year.
     """
-    logger.info("[%d] starting transform", year)
-    annual_count = compute_annual_grid(year, raw_dir, threshold_c)
+    logger.info("[%d] starting transform (%s)", year, metric)
+    annual_count = compute_annual_grid(year, raw_dir, threshold_c, metric)
 
     # Reduce (n_lat, n_lon) → scalar by averaging over all country grid points.
     # The bounding box includes sea cells (stored as NaN in ERA5-Land), which
     # are naturally excluded from the mean by xarray's default skipna=True.
-    mean_heat_days = float(annual_count.mean().values)
-    result = {"year": year, "extreme_heat_days": round(mean_heat_days, 2)}
+    mean_val = float(annual_count.mean().values)
+    col      = METRIC_COL[metric]
+    result   = {"year": year, col: round(mean_val, 2)}
 
-    logger.info("[%d] transform complete — extreme heat days: %.2f", year, mean_heat_days)
+    logger.info("[%d] transform complete — %s: %.2f days", year, col, mean_val)
     return result
 
 
@@ -161,41 +207,56 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    _METRIC_CSV = {
+        "heat_days":  "estonia_extreme_heat_days.csv",
+        "frost_days": "estonia_frost_days.csv",
+    }
+    _METRIC_CFG_KEY = {
+        "heat_days":  ("heat_days",  "threshold_tx_degC"),
+        "frost_days": ("frost_days", "threshold_tn_degC"),
+    }
+
     parser = argparse.ArgumentParser(
-        description="Compute extreme heat days from cached ERA5-Land files"
+        description="Compute climate day-count metrics from cached ERA5-Land files"
     )
     parser.add_argument("--country", default="EE",
                         help="ISO 3166-1 alpha-2 country code (default: EE)")
     parser.add_argument("--year", type=int, default=None,
                         help="Process a single year only")
-    args        = parser.parse_args()
-    cfg         = load_config()
-    threshold_c = float(cfg["metrics"]["heat_days"]["threshold_tx_degC"])
+    parser.add_argument("--metric", default="heat_days",
+                        choices=list(METRIC_COL),
+                        help="Metric to compute (default: heat_days)")
+    args     = parser.parse_args()
+    cfg      = load_config()
+    metric   = args.metric
+    col      = METRIC_COL[metric]
+    cfg_sect, cfg_key = _METRIC_CFG_KEY[metric]
+    threshold_c = float(cfg["metrics"][cfg_sect][cfg_key])
     years       = [args.year] if args.year else REFERENCE_YEARS
     raw_dir     = RAW_DIR / args.country.lower()
+    out_csv     = OUT_CSV.parent / _METRIC_CSV[metric]
 
-    # Load any previously computed years to support incremental runs.
     existing = {}
-    if OUT_CSV.exists():
-        existing = pd.read_csv(OUT_CSV).set_index("year")["extreme_heat_days"].to_dict()
+    if out_csv.exists():
+        existing = pd.read_csv(out_csv).set_index("year")[col].to_dict()
 
     rows = []
     for year in years:
         if year in existing:
             logger.info("[%d] already processed — skipping", year)
-            rows.append({"year": year, "extreme_heat_days": existing[year]})
+            rows.append({"year": year, col: existing[year]})
             continue
         try:
-            row = process_year(year, raw_dir, threshold_c)
+            row = process_year(year, raw_dir, threshold_c, metric)
             rows.append(row)
         except Exception as exc:
             logger.error("[%d] transform failed: %s", year, exc)
 
     if rows:
-        OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
-        df.to_csv(OUT_CSV, index=False)
-        logger.info("Saved → %s", OUT_CSV)
+        df.to_csv(out_csv, index=False)
+        logger.info("Saved → %s", out_csv)
 
 
 if __name__ == "__main__":
