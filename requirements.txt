@@ -4,3 +4,4 @@ pandas>=2.0
 pyyaml>=6.0
 numpy>=1.24
 pyarrow>=14.0
+folium>=0.14
