@@ -26,10 +26,14 @@ Data selected:
 """
 
 import sys
+import time
+import logging
 import argparse
 import yaml
 import cdsapi
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ── Shared paths ──────────────────────────────────────────────────────────────
 ROOT        = Path(__file__).parent.parent
@@ -75,6 +79,37 @@ def get_country_area(country_code: str) -> list:
         )
 
 
+def _retrieve_with_retry(
+    client: cdsapi.Client,
+    dataset: str,
+    params: dict,
+    output_path: Path,
+    max_retries: int = 3,
+    initial_wait: float = 5.0,
+) -> None:
+    """
+    Call client.retrieve() with exponential back-off on failure.
+
+    Retries up to max_retries times. Wait times are initial_wait × 2^(attempt-1)
+    seconds (default: 5 s, 10 s, then raises). Handles transient network errors
+    and CDS server hiccups; permanent errors (bad credentials, invalid variable)
+    will also be retried but will ultimately re-raise after max_retries attempts.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            client.retrieve(dataset, params, str(output_path))
+            return
+        except Exception as exc:
+            if attempt == max_retries:
+                raise
+            wait = initial_wait * (2 ** (attempt - 1))
+            logger.warning(
+                "CDS request failed (attempt %d/%d): %s. Retrying in %.0f s …",
+                attempt, max_retries, exc, wait,
+            )
+            time.sleep(wait)
+
+
 def download_month(client: cdsapi.Client, year: int, month: int,
                    area: list, raw_dir: Path) -> Path:
     """
@@ -97,11 +132,12 @@ def download_month(client: cdsapi.Client, year: int, month: int,
 
     if nc_path.exists():
         size_mb = nc_path.stat().st_size / 1e6
-        print(f"    [{year}-{month:02d}] cached ({size_mb:.0f} MB)")
+        logger.info("[%d-%02d] cached (%.0f MB)", year, month, size_mb)
         return nc_path
 
-    print(f"    [{year}-{month:02d}] submitting CDS request …")
-    client.retrieve(
+    logger.info("[%d-%02d] submitting CDS request …", year, month)
+    _retrieve_with_retry(
+        client,
         "reanalysis-era5-land",
         {
             # Only "reanalysis" is available for ERA5-Land (no ensemble members).
@@ -128,10 +164,10 @@ def download_month(client: cdsapi.Client, year: int, month: int,
             # CDS API may return a zip archive containing the NetCDF.
             "download_format": "unarchived",
         },
-        str(nc_path),
+        nc_path,
     )
     size_mb = nc_path.stat().st_size / 1e6
-    print(f"    [{year}-{month:02d}] downloaded ({size_mb:.0f} MB)")
+    logger.info("[%d-%02d] downloaded (%.0f MB)", year, month, size_mb)
     return nc_path
 
 
@@ -148,6 +184,12 @@ def download_year(client: cdsapi.Client, year: int,
 
 def main():
     """Download all reference-period months for a country that are not yet cached."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(description="Download ERA5-Land data for a Baltic country")
     parser.add_argument("--country", default="EE",
                         help="ISO 3166-1 alpha-2 country code (default: EE)")
@@ -160,13 +202,13 @@ def main():
     client  = cdsapi.Client()
 
     for year in years:
-        print(f"  [{year}] downloading …")
+        logger.info("[%d] downloading …", year)
         try:
             download_year(client, year, area, raw_dir)
         except Exception as exc:
-            print(f"  [{year}] ERROR: {exc}", file=sys.stderr)
+            logger.error("[%d] download failed: %s", year, exc)
 
-    print("Done.")
+    logger.info("Done.")
 
 
 if __name__ == "__main__":
