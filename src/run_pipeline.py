@@ -31,15 +31,15 @@ from load_data import (
     load_config, download_year,
 )
 from validate  import validate_raw_file, validate_annual_result
-from transform import compute_annual_grid
+from transform import compute_annual_grid, METRIC_COL
 
 logger = logging.getLogger(__name__)
 
 
-def _write_grid_parquet(annual_grid, year: int, path) -> None:
-    """Upsert one year's per-grid-point heat-day counts into the grid Parquet."""
-    df_year = annual_grid.to_dataframe(name="extreme_heat_days").reset_index()
-    df_year = df_year.assign(year=year).dropna(subset=["extreme_heat_days"])
+def _write_grid_parquet(annual_grid, year: int, path, col: str = "extreme_heat_days") -> None:
+    """Upsert one year's per-grid-point day-counts into the grid Parquet."""
+    df_year = annual_grid.to_dataframe(name=col).reset_index()
+    df_year = df_year.assign(year=year).dropna(subset=[col])
 
     if path.exists():
         df_existing = pd.read_parquet(path)
@@ -67,32 +67,46 @@ def main():
         "--year", type=int, default=None,
         help="Run for a single year only (default: full 1991–2020 reference period)"
     )
+    parser.add_argument(
+        "--metric", default="heat_days", choices=list(METRIC_COL),
+        help="Climate metric to compute (default: heat_days)"
+    )
     args = parser.parse_args()
     cfg  = load_config()
 
     country_code = args.country.upper()
+    metric_key   = args.metric
+    col          = METRIC_COL[metric_key]
     country_name = cfg["countries"][country_code]["name"]
     area         = cfg["countries"][country_code]["area"]    # [N, W, S, E]
     raw_dir      = RAW_DIR / country_code.lower()
-    threshold_c  = float(cfg["metrics"]["heat_days"]["threshold_tx_degC"])
     bounds       = cfg["validation"]
     years        = [args.year] if args.year else REFERENCE_YEARS
 
+    _cfg_key = "threshold_tx_degC" if metric_key == "heat_days" else "threshold_tn_degC"
+    threshold_c = float(cfg["metrics"][metric_key][_cfg_key])
+
+    _METRIC_CSV = {
+        "heat_days":  "estonia_extreme_heat_days.csv",
+        "frost_days": "estonia_frost_days.csv",
+    }
+    out_csv      = OUT_CSV.parent / _METRIC_CSV[metric_key]
+    grid_parquet = OUT_CSV.parent / f"{metric_key}_grid_{country_code.lower()}.parquet"
+
     logger.info("=" * 55)
-    logger.info("Extreme Heat Days — %s | ERA5-Land", country_name)
+    logger.info("%s — %s | ERA5-Land", col, country_name)
     logger.info("Years  : %d–%d", years[0], years[-1])
-    logger.info("Metric : mean annual days with TX >= %.0f °C", threshold_c)
+    logger.info("Metric : %s | threshold %.0f °C", metric_key, threshold_c)
     logger.info("Area   : %s  (N, W, S, E)", area)
     logger.info("=" * 55)
 
-    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    grid_parquet = OUT_CSV.parent / f"heat_days_grid_{country_code.lower()}.parquet"
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # Load any previously saved results so partial runs accumulate correctly
     # without re-downloading or re-processing already-completed years.
     existing = {}
-    if OUT_CSV.exists():
-        existing = pd.read_csv(OUT_CSV).set_index("year")["extreme_heat_days"].to_dict()
+    if out_csv.exists():
+        existing = pd.read_csv(out_csv).set_index("year")[col].to_dict()
 
     client = cdsapi.Client()
     rows   = []
@@ -117,12 +131,12 @@ def main():
             # Raw files are cached, so only the transform stage is needed.
             logger.info("[%d] in CSV but grid missing — recomputing grid", year)
             try:
-                annual_grid = compute_annual_grid(year, raw_dir, threshold_c)
-                _write_grid_parquet(annual_grid, year, grid_parquet)
+                annual_grid = compute_annual_grid(year, raw_dir, threshold_c, metric_key)
+                _write_grid_parquet(annual_grid, year, grid_parquet, col)
                 logger.info("[%d] grid saved → %s", year, grid_parquet)
             except Exception as exc:
                 logger.error("[%d] grid recompute failed: %s", year, exc)
-            rows.append({"year": year, "extreme_heat_days": existing[year]})
+            rows.append({"year": year, col: existing[year]})
             continue
 
         # ── Stage 1: LOAD ──────────────────────────────────────────────────────
@@ -149,16 +163,16 @@ def main():
         # ── Stage 3: TRANSFORM ─────────────────────────────────────────────────
         logger.info("[%d] TRANSFORM", year)
         try:
-            annual_grid    = compute_annual_grid(year, raw_dir, threshold_c)
-            mean_val       = float(annual_grid.mean().values)
-            row            = {"year": year, "extreme_heat_days": round(mean_val, 2)}
+            annual_grid = compute_annual_grid(year, raw_dir, threshold_c, metric_key)
+            mean_val    = float(annual_grid.mean().values)
+            row         = {"year": year, col: round(mean_val, 2)}
         except Exception as exc:
             logger.error("[%d] transform failed — skipping year: %s", year, exc)
             continue
 
         # ── Stage 4: VALIDATE result ───────────────────────────────────────────
         logger.info("[%d] VALIDATE (result)", year)
-        result_check = validate_annual_result(row)
+        result_check = validate_annual_result(row, metric_col=col)
         if not result_check["passed"]:
             logger.error("[%d] result validation failed — skipping: %s",
                          year, result_check["issues"])
@@ -166,7 +180,7 @@ def main():
 
         # ── Write grid Parquet ─────────────────────────────────────────────────
         try:
-            _write_grid_parquet(annual_grid, year, grid_parquet)
+            _write_grid_parquet(annual_grid, year, grid_parquet, col)
             logger.info("[%d] grid saved → %s", year, grid_parquet)
         except Exception as exc:
             logger.warning("[%d] grid Parquet write failed (non-fatal): %s", year, exc)
@@ -178,17 +192,16 @@ def main():
         sys.exit(1)
 
     df = pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
-    df.to_csv(OUT_CSV, index=False)
+    df.to_csv(out_csv, index=False)
 
     logger.info("=" * 55)
-    logger.info("Output : %s", OUT_CSV)
+    logger.info("Output : %s", out_csv)
     logger.info("=" * 55)
     for _, r in df.iterrows():
-        logger.info("  %d  %.2f days", r["year"], r["extreme_heat_days"])
+        logger.info("  %d  %.2f days", r["year"], r[col])
     if len(df) > 1:
-        logger.info("Mean : %.2f days/year", df["extreme_heat_days"].mean())
-        logger.info("Range: %.0f – %.0f days/year",
-                    df["extreme_heat_days"].min(), df["extreme_heat_days"].max())
+        logger.info("Mean : %.2f days/year", df[col].mean())
+        logger.info("Range: %.0f – %.0f days/year", df[col].min(), df[col].max())
 
 
 if __name__ == "__main__":

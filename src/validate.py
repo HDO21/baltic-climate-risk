@@ -196,25 +196,25 @@ def validate_tx(tx_c: xr.DataArray, year: int, month: int,
     return {"passed": len(issues) == 0, "issues": issues}
 
 
-def validate_annual_result(row: dict) -> dict:
+def validate_annual_result(row: dict, metric_col: str = "extreme_heat_days") -> dict:
     """
     Sanity-check an annual result dict produced by transform.process_year().
 
     Checks:
-      - "extreme_heat_days" key is present
+      - metric_col key is present in row
       - Value is non-negative (a count cannot be negative)
       - Value does not exceed 366 (impossible: more days than in a leap year)
     """
     issues = []
-    hd     = row.get("extreme_heat_days")
+    val    = row.get(metric_col)
 
-    if hd is None:
-        issues.append("'extreme_heat_days' key missing from result dict")
+    if val is None:
+        issues.append(f"'{metric_col}' key missing from result dict")
     else:
-        if hd < 0:
-            issues.append(f"Negative heat day count: {hd}")
-        if hd > 366:
-            issues.append(f"Heat day count exceeds days in a leap year: {hd}")
+        if val < 0:
+            issues.append(f"Negative day count for {metric_col}: {val}")
+        if val > 366:
+            issues.append(f"{metric_col} exceeds days in a leap year: {val}")
 
     if issues:
         logger.warning("Result validation failed for year %s: %s", row.get("year"), issues)
