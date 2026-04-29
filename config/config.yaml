@@ -25,7 +25,9 @@ metrics:
   id0:
     threshold_tx_degC: 0
   tr15:
-    threshold_tn_degC: 15
+    threshold_tn_degC: 17   # Baltic/Estonian operational standard (EMHI); ETCCDI global TR20 uses 20 °C
+  hard_frost:
+    threshold_tn_degC: -10
   txx: {}    # annual max daily TX — no threshold
   tnn: {}    # annual min daily TN — no threshold
   # Precipitation-based (use tp files)

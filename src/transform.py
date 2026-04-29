@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 transform.py — ERA5-Land data transformation for the Baltic climate risk pipeline.
 
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 METRIC_COL = {
     "heat_days":  "extreme_heat_days",
     "frost_days": "frost_days",
+    "hard_frost": "hard_frost_days",
     "id0":        "id0",
     "tr15":       "tr15",
     "txx":        "txx",
@@ -172,9 +174,14 @@ def compute_annual_grid(year: int, raw_dir: Path, threshold_c: float,
             monthly = (tx < threshold_c).sum(dim=time_dim)
             annual = monthly if annual is None else annual + monthly
 
+        elif metric == "hard_frost":
+            tn = hourly_to_daily_tn(t2m, time_dim)
+            monthly = (tn < threshold_c).sum(dim=time_dim)
+            annual = monthly if annual is None else annual + monthly
+
         elif metric == "tr15":
             tn = hourly_to_daily_tn(t2m, time_dim)
-            monthly = (tn > threshold_c).sum(dim=time_dim)
+            monthly = (tn >= threshold_c).sum(dim=time_dim)   # ETCCDI warm-side uses >=
             annual = monthly if annual is None else annual + monthly
 
         elif metric == "txx":
@@ -247,7 +254,7 @@ def compute_annual_precip_grid(year: int, raw_dir: Path, threshold_mm: float,
         wet_mask     = daily >= 1.0           # wet day: pr >= 1 mm
         wet_pr       = (daily * wet_mask).sum(dim=daily.dims[0])
         wet_day_cnt  = wet_mask.sum(dim=daily.dims[0])
-        heavy_day_cnt = (daily > 20.0).sum(dim=daily.dims[0])
+        heavy_day_cnt = (daily >= 20.0).sum(dim=daily.dims[0])  # ETCCDI R20mm: >= 20 mm
 
         annual_wet_pr   = wet_pr       if annual_wet_pr   is None else annual_wet_pr   + wet_pr
         annual_wet_days = wet_day_cnt  if annual_wet_days is None else annual_wet_days + wet_day_cnt
@@ -295,6 +302,7 @@ def main():
     _METRIC_CSV = {
         "heat_days":  "estonia_extreme_heat_days.csv",
         "frost_days": "estonia_frost_days.csv",
+        "hard_frost": "estonia_hard_frost.csv",
         "id0":        "estonia_id0.csv",
         "tr15":       "estonia_tr15.csv",
         "txx":        "estonia_txx.csv",
@@ -307,6 +315,7 @@ def main():
     _METRIC_CFG = {
         "heat_days":  ("heat_days",  "threshold_tx_degC"),
         "frost_days": ("frost_days", "threshold_tn_degC"),
+        "hard_frost": ("hard_frost", "threshold_tn_degC"),
         "id0":        ("id0",        "threshold_tx_degC"),
         "tr15":       ("tr15",       "threshold_tn_degC"),
         "txx":        None,

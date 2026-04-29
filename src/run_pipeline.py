@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 run_pipeline.py — ERA5-Land ETCCDI metrics pipeline orchestrator.
 
@@ -19,13 +20,12 @@ import sys
 import logging
 import argparse
 import pandas as pd
-import cdsapi
 
 from load_data import (
     REFERENCE_YEARS, RAW_DIR, OUT_CSV,
     load_config, download_year,
 )
-from validate  import validate_raw_file, validate_annual_result
+from validate  import validate_raw_file, validate_raw_tp_file, validate_annual_result
 from transform import (
     compute_annual_grid, compute_annual_precip_grid,
     METRIC_COL, PRECIP_METRICS,
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _METRIC_CSV = {
     "heat_days":  "estonia_extreme_heat_days.csv",
     "frost_days": "estonia_frost_days.csv",
+    "hard_frost": "estonia_hard_frost.csv",
     "id0":        "estonia_id0.csv",
     "tr15":       "estonia_tr15.csv",
     "txx":        "estonia_txx.csv",
@@ -52,6 +53,7 @@ _METRIC_CSV = {
 _METRIC_CFG = {
     "heat_days":  ("heat_days",  "threshold_tx_degC"),
     "frost_days": ("frost_days", "threshold_tn_degC"),
+    "hard_frost": ("hard_frost", "threshold_tn_degC"),
     "id0":        ("id0",        "threshold_tx_degC"),
     "tr15":       ("tr15",       "threshold_tn_degC"),
     "txx":        None,
@@ -172,24 +174,28 @@ def main():
             cds_variable = "total_precipitation" if is_precip else "2m_temperature"
             try:
                 if client is None:
+                    import cdsapi          # deferred so --no-download needs no credentials
                     client = cdsapi.Client()
                 download_year(client, year, area, raw_dir, variable=cds_variable)
             except Exception as exc:
                 logger.error("[%d] download failed — skipping year: %s", year, exc)
                 continue
 
-        # ── Stage 2: VALIDATE raw files (t2m only) ────────────────────────────
-        if not is_precip:
-            logger.info("[%d] VALIDATE (raw)", year)
-            raw_ok = True
-            for month in range(1, 13):
+        # ── Stage 2: VALIDATE raw files ────────────────────────────────────────
+        logger.info("[%d] VALIDATE (raw %s)", year, "tp" if is_precip else "t2m")
+        raw_ok = True
+        for month in range(1, 13):
+            if is_precip:
+                nc_path = raw_dir / f"era5land_tp_{year}_{month:02d}.nc"
+                result  = validate_raw_tp_file(nc_path, year, month)
+            else:
                 nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
                 result  = validate_raw_file(nc_path, year, month, bounds)
-                if not result["passed"]:
-                    raw_ok = False
-            if not raw_ok:
-                logger.error("[%d] raw validation failed — skipping transform", year)
-                continue
+            if not result["passed"]:
+                raw_ok = False
+        if not raw_ok:
+            logger.error("[%d] raw validation failed — skipping transform", year)
+            continue
 
         # ── Stage 3: TRANSFORM ─────────────────────────────────────────────────
         logger.info("[%d] TRANSFORM", year)
