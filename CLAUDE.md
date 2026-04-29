@@ -106,8 +106,8 @@ API requests must be limited to the country bounding box — do not request larg
 - Resolution: 0.1° × 0.1° (~9 km), 1950–present
 - Temperature (`t2m`): instantaneous hourly values in **Kelvin** — subtract 273.15 for Celsius
   - Daily TX = `.resample("1D").max()`; daily TN = `.resample("1D").min()`
-- Precipitation (`tp`): **per-hour accumulation in metres** (each timestep = that hour only, NOT cumulative from 00:00)
-  - Daily total (mm) = sum of all 24 hourly values × 1000
+- Precipitation (`tp`): **running daily accumulation in metres since 00:00 UTC** — resets each calendar day; the 23:00 UTC value = full-day total
+  - Daily total (mm) = `.resample("1D").last() * 1000` — take the last (23:00) value; do NOT sum all 24 values (that produces ~10× overcount)
 - Sea/water cells are always NaN in `t2m` (ERA5-Land land mask) — expected, not a data error
 - Do NOT bias-correct ERA5-Land — it already incorporates observational constraints
 - Raw file naming: `era5land_t2m_{year}_{month:02d}.nc`, `era5land_tp_{year}_{month:02d}.nc`

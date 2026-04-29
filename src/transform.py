@@ -99,15 +99,19 @@ def count_frost_days_per_gridpoint(tn_c: xr.DataArray, threshold_c: float,
 
 def hourly_to_daily_pr(tp_m: xr.DataArray, time_dim: str) -> xr.DataArray:
     """
-    Sum 24 per-hour tp values (metres) per calendar day and convert to mm.
+    Extract daily total precipitation in mm from ERA5-Land hourly tp.
 
-    ERA5-Land total_precipitation stores the accumulation within each 1-hour
-    period only (not cumulative from 00:00). Summing all 24 hourly values and
-    multiplying by 1000 gives the daily total in mm.
+    ERA5-Land total_precipitation is a running accumulation since 00:00 UTC
+    that resets each calendar day. The 23:00 UTC value therefore already holds
+    the full-day total in metres. Taking the last value per day and multiplying
+    by 1000 gives the correct daily total in mm — no summation needed.
+
+    Using .sum() instead would produce ~10× overcounting because it adds the
+    rising cumulative series rather than reading its endpoint.
 
     Returns shape (n_days, lat, lon) in mm/day.
     """
-    return tp_m.resample({time_dim: "1D"}).sum() * 1000.0
+    return tp_m.resample({time_dim: "1D"}).last() * 1000.0
 
 
 def _max_cdd_per_gridpoint(pr_mm: xr.DataArray, time_dim: str) -> xr.DataArray:

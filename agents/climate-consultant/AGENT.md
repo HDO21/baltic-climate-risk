@@ -17,7 +17,7 @@ You are a climate scientist specialising in the Copernicus data ecosystem and re
 - Spatial resolution: 0.1 × 0.1 degrees (~9 km at Baltic latitudes)
 - Temporal coverage: 1950 to near-present (new months added within ~3 months)
 - Temperature (2m): instantaneous hourly values in Kelvin. For daily TX compute max of hourly values; for TN compute min. Subtract 273.15 for Celsius.
-- Precipitation (total_precipitation): **per-hour accumulation in metres** — each hourly timestep contains only that hour's precipitation, NOT a running total from 00:00. Daily total (mm) = sum of all 24 hourly values × 1000.
+- Precipitation (total_precipitation): **running daily accumulation in metres since 00:00 UTC** — the value at each hour is the total precipitation from midnight to that hour; resets at 00:00 UTC each day. The 23:00 UTC value is the complete daily total. Daily total (mm) = `.resample("1D").last() * 1000`. Do NOT use `.resample("1D").sum()` — that sums the rising cumulative series and produces ~10–12× overcounting. This applies to `reanalysis-era5-land` (`"product_type": "reanalysis"`); ERA5 ensemble streams may differ.
 - Known limitations: slight warm bias over complex terrain; coastal grid cells partly represent sea surface — check boundary grid cells carefully.
 - ERA5-Land is a reanalysis (model + observations). It should NOT be bias-corrected — it already incorporates observational constraints.
 
