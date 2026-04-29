@@ -17,10 +17,26 @@ countries:
     area: [56.5, 20.9, 53.8, 27.0]   # official: lon 20.93–26.94, lat 53.89–56.45
 
 metrics:
+  # Temperature-based (use t2m files)
   heat_days:
     threshold_tx_degC: 30
   frost_days:
     threshold_tn_degC: 0
+  id0:
+    threshold_tx_degC: 0
+  tr15:
+    threshold_tn_degC: 15
+  txx: {}    # annual max daily TX — no threshold
+  tnn: {}    # annual min daily TN — no threshold
+  # Precipitation-based (use tp files)
+  cdd:
+    threshold_pr_mm: 1     # dry day: pr < 1 mm/day
+  r20mm:
+    threshold_pr_mm: 20    # heavy rain day: pr > 20 mm/day
+  sdii:
+    threshold_pr_mm: 1     # wet day for intensity: pr >= 1 mm/day
+  prcptot:
+    threshold_pr_mm: 1     # wet day for total: pr >= 1 mm/day
 
 # Physical plausibility bounds used by validate.py.
 # t2m bounds apply to raw ERA5-Land values (Kelvin); tx bounds to derived daily

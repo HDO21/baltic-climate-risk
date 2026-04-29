@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """
-run_pipeline.py — ERA5-Land extreme heat days pipeline orchestrator.
+run_pipeline.py — ERA5-Land ETCCDI metrics pipeline orchestrator.
 
-Runs the full three-stage pipeline for one or all years of the 1991–2020
-WMO reference period, for a given Baltic country:
+Runs the full pipeline for one or all years of the 1991–2020 WMO reference
+period for a given Baltic country and metric:
 
-  1. LOAD      — download monthly ERA5-Land NetCDF files from CDS (cached on disk)
-  2. VALIDATE  — check each raw file for structural integrity and physical plausibility
-  3. TRANSFORM — derive daily TX, count extreme heat days, average over country grid
-  4. VALIDATE  — sanity-check the annual scalar result before writing to CSV
-
-Each stage is implemented in its own module:
-  load_data.py  → CDS API download, caching, config helpers
-  validate.py   → quality checks at raw-file and result level
-  transform.py  → unit conversion, resampling, metric computation
+  1. LOAD      — download monthly ERA5-Land NetCDF files from CDS (cached)
+  2. VALIDATE  — check raw t2m files (temperature metrics only)
+  3. TRANSFORM — compute the ETCCDI metric per grid point, average over country
+  4. VALIDATE  — sanity-check the annual scalar result
 
 Usage:
     conda activate climate-risk
-    python src/run_pipeline.py [--country EE] [--year YYYY]
+    python src/run_pipeline.py [--country EE] [--year YYYY] [--metric heat_days]
 """
 
 import sys
@@ -31,13 +26,45 @@ from load_data import (
     load_config, download_year,
 )
 from validate  import validate_raw_file, validate_annual_result
-from transform import compute_annual_grid, METRIC_COL
+from transform import (
+    compute_annual_grid, compute_annual_precip_grid,
+    METRIC_COL, PRECIP_METRICS,
+)
 
 logger = logging.getLogger(__name__)
 
+# ── Output path mappings ──────────────────────────────────────────────────────
 
-def _write_grid_parquet(annual_grid, year: int, path, col: str = "extreme_heat_days") -> None:
-    """Upsert one year's per-grid-point day-counts into the grid Parquet."""
+_METRIC_CSV = {
+    "heat_days":  "estonia_extreme_heat_days.csv",
+    "frost_days": "estonia_frost_days.csv",
+    "id0":        "estonia_id0.csv",
+    "tr15":       "estonia_tr15.csv",
+    "txx":        "estonia_txx.csv",
+    "tnn":        "estonia_tnn.csv",
+    "cdd":        "estonia_cdd.csv",
+    "r20mm":      "estonia_r20mm.csv",
+    "sdii":       "estonia_sdii.csv",
+    "prcptot":    "estonia_prcptot.csv",
+}
+
+# (config section, config key) — None for metrics without a threshold.
+_METRIC_CFG = {
+    "heat_days":  ("heat_days",  "threshold_tx_degC"),
+    "frost_days": ("frost_days", "threshold_tn_degC"),
+    "id0":        ("id0",        "threshold_tx_degC"),
+    "tr15":       ("tr15",       "threshold_tn_degC"),
+    "txx":        None,
+    "tnn":        None,
+    "cdd":        ("cdd",        "threshold_pr_mm"),
+    "r20mm":      ("r20mm",      "threshold_pr_mm"),
+    "sdii":       ("sdii",       "threshold_pr_mm"),
+    "prcptot":    ("prcptot",    "threshold_pr_mm"),
+}
+
+
+def _write_grid_parquet(annual_grid, year: int, path, col: str) -> None:
+    """Upsert one year's per-grid-point values into the grid Parquet."""
     df_year = annual_grid.to_dataframe(name=col).reset_index()
     df_year = df_year.assign(year=year).dropna(subset=[col])
 
@@ -50,6 +77,13 @@ def _write_grid_parquet(annual_grid, year: int, path, col: str = "extreme_heat_d
     df_year.to_parquet(path, index=False)
 
 
+def _run_transform(year, raw_dir, threshold_c, metric_key):
+    """Dispatch to the correct transform function based on metric type."""
+    if metric_key in PRECIP_METRICS:
+        return compute_annual_precip_grid(year, raw_dir, threshold_c, metric_key)
+    return compute_annual_grid(year, raw_dir, threshold_c, metric_key)
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -57,20 +91,15 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    parser = argparse.ArgumentParser(description="ERA5-Land extreme heat days pipeline")
-    parser.add_argument(
-        "--country", default="EE",
-        help="ISO 3166-1 alpha-2 country code (default: EE). "
-             "Must be defined in config/config.yaml → countries."
-    )
-    parser.add_argument(
-        "--year", type=int, default=None,
-        help="Run for a single year only (default: full 1991–2020 reference period)"
-    )
-    parser.add_argument(
-        "--metric", default="heat_days", choices=list(METRIC_COL),
-        help="Climate metric to compute (default: heat_days)"
-    )
+    parser = argparse.ArgumentParser(description="ERA5-Land ETCCDI metrics pipeline")
+    parser.add_argument("--country", default="EE",
+                        help="ISO 3166-1 alpha-2 country code (default: EE)")
+    parser.add_argument("--year", type=int, default=None,
+                        help="Run for a single year only")
+    parser.add_argument("--metric", default="heat_days", choices=list(METRIC_COL),
+                        help="ETCCDI metric to compute (default: heat_days)")
+    parser.add_argument("--no-download", action="store_true",
+                        help="Skip the CDS download stage and transform from cached files only")
     args = parser.parse_args()
     cfg  = load_config()
 
@@ -78,41 +107,39 @@ def main():
     metric_key   = args.metric
     col          = METRIC_COL[metric_key]
     country_name = cfg["countries"][country_code]["name"]
-    area         = cfg["countries"][country_code]["area"]    # [N, W, S, E]
+    area         = cfg["countries"][country_code]["area"]
     raw_dir      = RAW_DIR / country_code.lower()
     bounds       = cfg["validation"]
     years        = [args.year] if args.year else REFERENCE_YEARS
+    is_precip    = metric_key in PRECIP_METRICS
+    no_download  = args.no_download
 
-    _cfg_key = "threshold_tx_degC" if metric_key == "heat_days" else "threshold_tn_degC"
-    threshold_c = float(cfg["metrics"][metric_key][_cfg_key])
+    cfg_entry   = _METRIC_CFG[metric_key]
+    threshold_c = (
+        float(cfg["metrics"][cfg_entry[0]][cfg_entry[1]]) if cfg_entry else 0.0
+    )
 
-    _METRIC_CSV = {
-        "heat_days":  "estonia_extreme_heat_days.csv",
-        "frost_days": "estonia_frost_days.csv",
-    }
     out_csv      = OUT_CSV.parent / _METRIC_CSV[metric_key]
     grid_parquet = OUT_CSV.parent / f"{metric_key}_grid_{country_code.lower()}.parquet"
 
     logger.info("=" * 55)
     logger.info("%s — %s | ERA5-Land", col, country_name)
     logger.info("Years  : %d–%d", years[0], years[-1])
-    logger.info("Metric : %s | threshold %.0f °C", metric_key, threshold_c)
+    logger.info("Source : %s", "total_precipitation (tp)" if is_precip else "2m_temperature (t2m)")
     logger.info("Area   : %s  (N, W, S, E)", area)
     logger.info("=" * 55)
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load any previously saved results so partial runs accumulate correctly
-    # without re-downloading or re-processing already-completed years.
     existing = {}
     if out_csv.exists():
         existing = pd.read_csv(out_csv).set_index("year")[col].to_dict()
 
-    client = cdsapi.Client()
+    client = None   # created on first download; skipped entirely with --no-download
     rows   = []
 
     for year in years:
-        # Determine whether the grid Parquet already contains this year.
+        # Check whether this year already exists in both CSV and Parquet.
         parquet_has_year = False
         if grid_parquet.exists():
             try:
@@ -123,15 +150,13 @@ def main():
 
         if year in existing and parquet_has_year:
             logger.info("[%d] already in output CSV and grid — skipping", year)
-            rows.append({"year": year, "extreme_heat_days": existing[year]})
+            rows.append({"year": year, col: existing[year]})
             continue
 
         if year in existing and not parquet_has_year:
-            # CSV has this year but the grid Parquet is missing or incomplete.
-            # Raw files are cached, so only the transform stage is needed.
             logger.info("[%d] in CSV but grid missing — recomputing grid", year)
             try:
-                annual_grid = compute_annual_grid(year, raw_dir, threshold_c, metric_key)
+                annual_grid = _run_transform(year, raw_dir, threshold_c, metric_key)
                 _write_grid_parquet(annual_grid, year, grid_parquet, col)
                 logger.info("[%d] grid saved → %s", year, grid_parquet)
             except Exception as exc:
@@ -140,30 +165,36 @@ def main():
             continue
 
         # ── Stage 1: LOAD ──────────────────────────────────────────────────────
-        logger.info("[%d] LOAD", year)
-        try:
-            download_year(client, year, area, raw_dir)
-        except Exception as exc:
-            logger.error("[%d] download failed — skipping year: %s", year, exc)
-            continue
+        if no_download:
+            logger.info("[%d] LOAD skipped (--no-download)", year)
+        else:
+            logger.info("[%d] LOAD", year)
+            cds_variable = "total_precipitation" if is_precip else "2m_temperature"
+            try:
+                if client is None:
+                    client = cdsapi.Client()
+                download_year(client, year, area, raw_dir, variable=cds_variable)
+            except Exception as exc:
+                logger.error("[%d] download failed — skipping year: %s", year, exc)
+                continue
 
-        # ── Stage 2: VALIDATE raw files ────────────────────────────────────────
-        logger.info("[%d] VALIDATE (raw)", year)
-        raw_ok = True
-        for month in range(1, 13):
-            nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
-            result  = validate_raw_file(nc_path, year, month, bounds)
-            if not result["passed"]:
-                raw_ok = False
-
-        if not raw_ok:
-            logger.error("[%d] raw validation failed — skipping transform", year)
-            continue
+        # ── Stage 2: VALIDATE raw files (t2m only) ────────────────────────────
+        if not is_precip:
+            logger.info("[%d] VALIDATE (raw)", year)
+            raw_ok = True
+            for month in range(1, 13):
+                nc_path = raw_dir / f"era5land_t2m_{year}_{month:02d}.nc"
+                result  = validate_raw_file(nc_path, year, month, bounds)
+                if not result["passed"]:
+                    raw_ok = False
+            if not raw_ok:
+                logger.error("[%d] raw validation failed — skipping transform", year)
+                continue
 
         # ── Stage 3: TRANSFORM ─────────────────────────────────────────────────
         logger.info("[%d] TRANSFORM", year)
         try:
-            annual_grid = compute_annual_grid(year, raw_dir, threshold_c, metric_key)
+            annual_grid = _run_transform(year, raw_dir, threshold_c, metric_key)
             mean_val    = float(annual_grid.mean().values)
             row         = {"year": year, col: round(mean_val, 2)}
         except Exception as exc:
@@ -198,10 +229,10 @@ def main():
     logger.info("Output : %s", out_csv)
     logger.info("=" * 55)
     for _, r in df.iterrows():
-        logger.info("  %d  %.2f days", r["year"], r[col])
+        logger.info("  %d  %.2f", r["year"], r[col])
     if len(df) > 1:
-        logger.info("Mean : %.2f days/year", df[col].mean())
-        logger.info("Range: %.0f – %.0f days/year", df[col].min(), df[col].max())
+        logger.info("Mean : %.2f", df[col].mean())
+        logger.info("Range: %.2f – %.2f", df[col].min(), df[col].max())
 
 
 if __name__ == "__main__":
