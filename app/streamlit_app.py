@@ -45,6 +45,7 @@ METRICS = {
         "bar_color":       "#D55E00",   # vermillion
         "y_label":         "Days per year",
         "pipeline_flag":   "heat_days",
+        "csv_header":      f"Extreme Heat Days – TX≥{_THRESHOLD_HEAT_C:.0f}°C [days/year]",
     },
     "Annual Maximum Temperature": {
         "col":             "txx",
@@ -54,17 +55,29 @@ METRICS = {
         "bar_color":       "#E69F00",   # orange
         "y_label":         "Temperature (°C)",
         "pipeline_flag":   "txx",
+        "csv_header":      "Annual Maximum Temperature – TXx [°C]",
     },
     "Tropical Nights": {
         "col":             "tr15",
         "csv":             _P / "estonia_tr15.csv",
         "parquet":         _P / "tr15_grid_ee.parquet",
-        "threshold_label": "TN > 15 °C",
+        "threshold_label": "TN ≥ 17 °C",
         "bar_color":       "#CC79A7",   # reddish purple
         "y_label":         "Days per year",
         "pipeline_flag":   "tr15",
+        "csv_header":      "Tropical Nights – TN≥17°C [days/year]",
     },
     # ── Temperature: cold ─────────────────────────────────────────────────────
+    "Hard Frost Days": {
+        "col":             "hard_frost_days",
+        "csv":             _P / "estonia_hard_frost.csv",
+        "parquet":         _P / "hard_frost_grid_ee.parquet",
+        "threshold_label": "TN < −10 °C",
+        "bar_color":       "#882255",   # wine — Paul Tol muted palette
+        "y_label":         "Days per year",
+        "pipeline_flag":   "hard_frost",
+        "csv_header":      "Hard Frost Days – TN<−10°C [days/year]",
+    },
     "Frost Days": {
         "col":             "frost_days",
         "csv":             _P / "estonia_frost_days.csv",
@@ -73,6 +86,7 @@ METRICS = {
         "bar_color":       "#0072B2",   # blue
         "y_label":         "Days per year",
         "pipeline_flag":   "frost_days",
+        "csv_header":      f"Frost Days – TN<{_THRESHOLD_FROST_C:.0f}°C [days/year]",
     },
     "Ice Days": {
         "col":             "id0",
@@ -82,6 +96,7 @@ METRICS = {
         "bar_color":       "#56B4E9",   # sky blue
         "y_label":         "Days per year",
         "pipeline_flag":   "id0",
+        "csv_header":      "Ice Days – TX<0°C [days/year]",
     },
     "Annual Minimum Temperature": {
         "col":             "tnn",
@@ -91,6 +106,7 @@ METRICS = {
         "bar_color":       "#009E73",   # bluish green
         "y_label":         "Temperature (°C)",
         "pipeline_flag":   "tnn",
+        "csv_header":      "Annual Minimum Temperature – TNn [°C]",
     },
     # ── Precipitation ─────────────────────────────────────────────────────────
     "Consecutive Dry Days": {
@@ -101,6 +117,7 @@ METRICS = {
         "bar_color":       "#DDAA33",   # golden yellow
         "y_label":         "Days",
         "pipeline_flag":   "cdd",
+        "csv_header":      "Consecutive Dry Days – CDD [days]",
     },
     "Heavy Precipitation Days": {
         "col":             "r20mm",
@@ -110,6 +127,7 @@ METRICS = {
         "bar_color":       "#332288",   # indigo
         "y_label":         "Days per year",
         "pipeline_flag":   "r20mm",
+        "csv_header":      "Heavy Precipitation Days – R20mm [days/year]",
     },
     "Precipitation Intensity": {
         "col":             "sdii",
@@ -119,6 +137,7 @@ METRICS = {
         "bar_color":       "#44BB99",   # mint
         "y_label":         "mm per day",
         "pipeline_flag":   "sdii",
+        "csv_header":      "Precipitation Intensity – SDII [mm/day]",
     },
     "Annual Total Precipitation": {
         "col":             "prcptot",
@@ -128,6 +147,7 @@ METRICS = {
         "bar_color":       "#117733",   # dark green
         "y_label":         "mm per year",
         "pipeline_flag":   "prcptot",
+        "csv_header":      "Annual Total Precipitation – PRCPTOT [mm/year]",
     },
 }
 
@@ -143,14 +163,16 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
                          parquet_paths: tuple) -> str:
     """
     Load every available metric Parquet, extract the nearest grid cell, join
-    on year and return a semicolon-delimited CSV string covering 1991–2020.
+    on year, append a period-mean row, rename columns to human-readable
+    headers and return a semicolon-delimited CSV string.
 
-    parquet_paths: tuple of (metric_col, path_str) pairs — must be hashable
+    parquet_paths: tuple of (metric_col, csv_header, path_str) — hashable
     so st.cache_data can key on it.
     """
     df_all = pd.DataFrame({"year": list(range(1991, 2021))})
+    col_rename = {"year": "Year"}
 
-    for metric_col, path_str in parquet_paths:
+    for metric_col, csv_header, path_str in parquet_paths:
         path = Path(path_str)
         if not path.exists():
             continue
@@ -164,9 +186,18 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
             ][["year", metric_col]]
             if not df_point.empty:
                 df_all = df_all.merge(df_point, on="year", how="left")
+                col_rename[metric_col] = csv_header
         except Exception:
             continue
 
+    # Append a period-mean row (NaN years excluded from the mean automatically).
+    mean_row = {"year": "Period mean (1991–2020)"}
+    for c in df_all.columns:
+        if c != "year":
+            mean_row[c] = round(df_all[c].mean(), 2)
+    df_all = pd.concat([df_all, pd.DataFrame([mean_row])], ignore_index=True)
+
+    df_all = df_all.rename(columns=col_rename)
     return df_all.to_csv(sep=";", index=False)
 
 
@@ -256,7 +287,7 @@ fig.add_trace(go.Bar(
     y=df_done[col],
     name="Processed",
     marker_color=m["bar_color"],
-    hovertemplate="%{x}: <b>%{y:.2f}</b> days<extra></extra>",
+    hovertemplate=f"%{{x}}: <b>%{{y:.2f}}</b> {m['y_label']}<extra></extra>",
 ))
 
 if not df_pending.empty:
@@ -401,7 +432,7 @@ if lon_raw.strip() or lat_raw.strip():
                 y=df_pt_done[col],
                 name="Processed",
                 marker_color=m["bar_color"],
-                hovertemplate="%{x}: <b>%{y:.2f}</b> days<extra></extra>",
+                hovertemplate=f"%{{x}}: <b>%{{y:.2f}}</b> {m['y_label']}<extra></extra>",
             ))
             if not df_pt_pending.empty:
                 fig_pt.add_trace(go.Bar(
@@ -431,7 +462,7 @@ if lon_raw.strip() or lat_raw.strip():
 
             # ── CSV download ───────────────────────────────────────────────────
             _parquet_index = tuple(
-                (meta["col"], str(meta["parquet"]))
+                (meta["col"], meta["csv_header"], str(meta["parquet"]))
                 for meta in METRICS.values()
             )
             csv_bytes = _build_location_csv(

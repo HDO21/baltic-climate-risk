@@ -144,6 +144,69 @@ def validate_raw_file(nc_path: Path, year: int, month: int,
     return {"passed": len(issues) == 0, "issues": issues}
 
 
+def validate_raw_tp_file(nc_path: Path, year: int, month: int) -> dict:
+    """
+    Validate a downloaded monthly ERA5-Land tp NetCDF file.
+
+    Checks:
+      1. File opens without error
+      2. Variable "tp" is present (ERA5-Land short name for total_precipitation)
+      3. A recognised time coordinate is present
+      4. Hourly timestep count matches the calendar (days_in_month × 24)
+      5. Per-hour tp values are in the physically plausible range
+         (0 – 0.1 m/h ≈ 0 – 100 mm/h). Values above this indicate a unit
+         error (e.g. daily totals stored as hourly, or m/day not m/h).
+    """
+    issues = []
+
+    try:
+        ds = xr.open_dataset(nc_path)
+    except Exception as exc:
+        return {"passed": False, "issues": [f"Cannot open NetCDF: {exc}"]}
+
+    if "tp" not in ds.data_vars:
+        issues.append(f"Variable 'tp' missing; found: {list(ds.data_vars)}")
+
+    time_dim = "valid_time" if "valid_time" in ds.coords else "time"
+    if time_dim not in ds.coords:
+        issues.append("No time coordinate found (checked 'valid_time' and 'time')")
+        ds.close()
+        return {"passed": False, "issues": issues}
+
+    days_in_month  = calendar.monthrange(year, month)[1]
+    expected_steps = days_in_month * 24
+    actual_steps   = ds.sizes[time_dim]
+    if actual_steps != expected_steps:
+        issues.append(
+            f"Timestep count mismatch: expected {expected_steps} "
+            f"({days_in_month} days × 24 h), got {actual_steps}"
+        )
+
+    if "tp" in ds.data_vars:
+        tp     = ds["tp"]
+        tp_min = float(tp.min().values)
+        tp_max = float(tp.max().values)
+
+        if tp_min < 0:
+            issues.append(
+                f"tp has negative values: min = {tp_min:.6f} m/h"
+            )
+        if tp_max > 0.1:
+            issues.append(
+                f"tp above plausible maximum: {tp_max:.6f} m/h "
+                f"({tp_max * 1000:.1f} mm/h) — possible unit error"
+            )
+
+    ds.close()
+
+    if issues:
+        logger.warning("[%d-%02d] tp validation failed: %s", year, month, "; ".join(issues))
+    else:
+        logger.info("[%d-%02d] tp raw validation passed", year, month)
+
+    return {"passed": len(issues) == 0, "issues": issues}
+
+
 # ── Stage 2: transformed data and result checks ───────────────────────────────
 
 def validate_tx(tx_c: xr.DataArray, year: int, month: int,
@@ -202,6 +265,7 @@ def validate_tx(tx_c: xr.DataArray, year: int, month: int,
 _RESULT_BOUNDS: dict[str, tuple] = {
     "extreme_heat_days": (0,    366),
     "frost_days":        (0,    366),
+    "hard_frost_days":   (0,     90),   # TN < -10 °C; ~20–55 days/year for Estonia
     "id0":               (0,    366),
     "tr15":              (0,    366),
     "txx":               (-50,   50),   # °C, annual max TX for Baltic
