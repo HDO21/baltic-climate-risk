@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 validate.py — data quality checks for the Baltic climate risk pipeline.
 
@@ -196,25 +197,41 @@ def validate_tx(tx_c: xr.DataArray, year: int, month: int,
     return {"passed": len(issues) == 0, "issues": issues}
 
 
+# Physical plausibility bounds per metric column.
+# (lo, hi) — values outside this range indicate a processing error.
+_RESULT_BOUNDS: dict[str, tuple] = {
+    "extreme_heat_days": (0,    366),
+    "frost_days":        (0,    366),
+    "id0":               (0,    366),
+    "tr15":              (0,    366),
+    "txx":               (-50,   50),   # °C, annual max TX for Baltic
+    "tnn":               (-60,   30),   # °C, annual min TN for Baltic
+    "cdd":               (0,    366),
+    "r20mm":             (0,    366),
+    "sdii":              (0,     80),   # mm/day — Baltic realistic upper bound
+    "prcptot":           (0,   5000),   # mm/year
+}
+
+
 def validate_annual_result(row: dict, metric_col: str = "extreme_heat_days") -> dict:
     """
     Sanity-check an annual result dict produced by transform.process_year().
 
     Checks:
       - metric_col key is present in row
-      - Value is non-negative (a count cannot be negative)
-      - Value does not exceed 366 (impossible: more days than in a leap year)
+      - Value is within the physically plausible range for the metric
     """
     issues = []
     val    = row.get(metric_col)
+    lo, hi = _RESULT_BOUNDS.get(metric_col, (0, 366))
 
     if val is None:
         issues.append(f"'{metric_col}' key missing from result dict")
     else:
-        if val < 0:
-            issues.append(f"Negative day count for {metric_col}: {val}")
-        if val > 366:
-            issues.append(f"{metric_col} exceeds days in a leap year: {val}")
+        if val < lo:
+            issues.append(f"{metric_col} below plausible minimum ({val:.2f} < {lo})")
+        if val > hi:
+            issues.append(f"{metric_col} above plausible maximum ({val:.2f} > {hi})")
 
     if issues:
         logger.warning("Result validation failed for year %s: %s", row.get("year"), issues)

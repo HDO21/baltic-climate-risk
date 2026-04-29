@@ -31,25 +31,103 @@ _THRESHOLD_HEAT_C  = float(_cfg["metrics"]["heat_days"]["threshold_tx_degC"])
 _THRESHOLD_FROST_C = float(_cfg["metrics"]["frost_days"]["threshold_tn_degC"])
 
 # ── Metric definitions ─────────────────────────────────────────────────────────
+# All colours are from the Okabe-Ito palette, which is safe for the most common
+# forms of colour blindness (deuteranopia and protanopia).
 # Add an entry here to expose a new metric in the selector.
+_P = ROOT / "data/processed"
 METRICS = {
+    # ── Temperature: hot ──────────────────────────────────────────────────────
     "Extreme Heat Days": {
         "col":             "extreme_heat_days",
-        "csv":             ROOT / "data/processed/estonia_extreme_heat_days.csv",
-        "parquet":         ROOT / "data/processed/heat_days_grid_ee.parquet",
+        "csv":             _P / "estonia_extreme_heat_days.csv",
+        "parquet":         _P / "heat_days_grid_ee.parquet",
         "threshold_label": f"TX ≥ {_THRESHOLD_HEAT_C:.0f} °C",
-        "bar_color":       "#d62728",
-        "y_label":         "Extreme heat days",
+        "bar_color":       "#D55E00",   # vermillion
+        "y_label":         "Days per year",
         "pipeline_flag":   "heat_days",
     },
+    "Annual Maximum Temperature": {
+        "col":             "txx",
+        "csv":             _P / "estonia_txx.csv",
+        "parquet":         _P / "txx_grid_ee.parquet",
+        "threshold_label": "Annual maximum daily TX",
+        "bar_color":       "#E69F00",   # orange
+        "y_label":         "Temperature (°C)",
+        "pipeline_flag":   "txx",
+    },
+    "Tropical Nights": {
+        "col":             "tr15",
+        "csv":             _P / "estonia_tr15.csv",
+        "parquet":         _P / "tr15_grid_ee.parquet",
+        "threshold_label": "TN > 15 °C",
+        "bar_color":       "#CC79A7",   # reddish purple
+        "y_label":         "Days per year",
+        "pipeline_flag":   "tr15",
+    },
+    # ── Temperature: cold ─────────────────────────────────────────────────────
     "Frost Days": {
         "col":             "frost_days",
-        "csv":             ROOT / "data/processed/estonia_frost_days.csv",
-        "parquet":         ROOT / "data/processed/frost_days_grid_ee.parquet",
+        "csv":             _P / "estonia_frost_days.csv",
+        "parquet":         _P / "frost_days_grid_ee.parquet",
         "threshold_label": f"TN < {_THRESHOLD_FROST_C:.0f} °C",
-        "bar_color":       "rgb(24, 56, 245)",
-        "y_label":         "Frost days",
+        "bar_color":       "#0072B2",   # blue
+        "y_label":         "Days per year",
         "pipeline_flag":   "frost_days",
+    },
+    "Ice Days": {
+        "col":             "id0",
+        "csv":             _P / "estonia_id0.csv",
+        "parquet":         _P / "id0_grid_ee.parquet",
+        "threshold_label": "TX < 0 °C",
+        "bar_color":       "#56B4E9",   # sky blue
+        "y_label":         "Days per year",
+        "pipeline_flag":   "id0",
+    },
+    "Annual Minimum Temperature": {
+        "col":             "tnn",
+        "csv":             _P / "estonia_tnn.csv",
+        "parquet":         _P / "tnn_grid_ee.parquet",
+        "threshold_label": "Annual minimum daily TN",
+        "bar_color":       "#009E73",   # bluish green
+        "y_label":         "Temperature (°C)",
+        "pipeline_flag":   "tnn",
+    },
+    # ── Precipitation ─────────────────────────────────────────────────────────
+    "Consecutive Dry Days": {
+        "col":             "cdd",
+        "csv":             _P / "estonia_cdd.csv",
+        "parquet":         _P / "cdd_grid_ee.parquet",
+        "threshold_label": "pr < 1 mm/day",
+        "bar_color":       "#DDAA33",   # golden yellow
+        "y_label":         "Days",
+        "pipeline_flag":   "cdd",
+    },
+    "Heavy Precipitation Days": {
+        "col":             "r20mm",
+        "csv":             _P / "estonia_r20mm.csv",
+        "parquet":         _P / "r20mm_grid_ee.parquet",
+        "threshold_label": "pr > 20 mm/day",
+        "bar_color":       "#332288",   # indigo
+        "y_label":         "Days per year",
+        "pipeline_flag":   "r20mm",
+    },
+    "Precipitation Intensity": {
+        "col":             "sdii",
+        "csv":             _P / "estonia_sdii.csv",
+        "parquet":         _P / "sdii_grid_ee.parquet",
+        "threshold_label": "Mean pr on wet days (≥ 1 mm)",
+        "bar_color":       "#44BB99",   # mint
+        "y_label":         "mm per day",
+        "pipeline_flag":   "sdii",
+    },
+    "Annual Total Precipitation": {
+        "col":             "prcptot",
+        "csv":             _P / "estonia_prcptot.csv",
+        "parquet":         _P / "prcptot_grid_ee.parquet",
+        "threshold_label": "Annual total pr on wet days (≥ 1 mm)",
+        "bar_color":       "#117733",   # dark green
+        "y_label":         "mm per year",
+        "pipeline_flag":   "prcptot",
     },
 }
 
@@ -58,6 +136,38 @@ METRICS = {
 @st.cache_data
 def _load_grid_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
+
+
+@st.cache_data
+def _build_location_csv(nearest_lat: float, nearest_lon: float,
+                         parquet_paths: tuple) -> str:
+    """
+    Load every available metric Parquet, extract the nearest grid cell, join
+    on year and return a semicolon-delimited CSV string covering 1991–2020.
+
+    parquet_paths: tuple of (metric_col, path_str) pairs — must be hashable
+    so st.cache_data can key on it.
+    """
+    df_all = pd.DataFrame({"year": list(range(1991, 2021))})
+
+    for metric_col, path_str in parquet_paths:
+        path = Path(path_str)
+        if not path.exists():
+            continue
+        try:
+            df_grid = _load_grid_parquet(path_str)
+            lat_col = "latitude" if "latitude" in df_grid.columns else "lat"
+            lon_col = "longitude" if "longitude" in df_grid.columns else "lon"
+            df_point = df_grid[
+                (df_grid[lat_col] == nearest_lat) &
+                (df_grid[lon_col] == nearest_lon)
+            ][["year", metric_col]]
+            if not df_point.empty:
+                df_all = df_all.merge(df_point, on="year", how="left")
+        except Exception:
+            continue
+
+    return df_all.to_csv(sep=";", index=False)
 
 
 def _parse_coord(text: str):
@@ -163,7 +273,7 @@ if pd.notna(period_mean):
         y=period_mean,
         line_dash="dash",
         line_color="#555555",
-        annotation_text=f"Period mean: {period_mean:.2f} days",
+        annotation_text=f"Period mean: {period_mean:.2f} {m['y_label'].lower()}",
         annotation_position="top left",
     )
 
@@ -195,9 +305,9 @@ _input_col, _map_col = st.columns([1, 2])
 
 with _input_col:
     lon_raw = st.text_input("X — Longitude", placeholder="25.8")
-    st.caption(f"Sample: 25.8  ·  Valid range: {_W}°–{_E}°E")
+    st.caption(f"Valid range: {_W}°–{_E}°E")
     lat_raw = st.text_input("Y — Latitude", placeholder="58.7")
-    st.caption(f"Sample: 58.7  ·  Valid range: {_S}°–{_N}°N")
+    st.caption(f"Valid range: {_S}°–{_N}°N")
 
 if lon_raw.strip() or lat_raw.strip():
     lon = _parse_coord(lon_raw)
@@ -306,7 +416,7 @@ if lon_raw.strip() or lat_raw.strip():
                     y=point_mean,
                     line_dash="dash",
                     line_color="#555555",
-                    annotation_text=f"Cell mean: {point_mean:.2f} days",
+                    annotation_text=f"Cell mean: {point_mean:.2f} {m['y_label'].lower()}",
                     annotation_position="top left",
                 )
             fig_pt.update_layout(
@@ -318,6 +428,24 @@ if lon_raw.strip() or lat_raw.strip():
                 barmode="overlay",
             )
             st.plotly_chart(fig_pt, use_container_width=True)
+
+            # ── CSV download ───────────────────────────────────────────────────
+            _parquet_index = tuple(
+                (meta["col"], str(meta["parquet"]))
+                for meta in METRICS.values()
+            )
+            csv_bytes = _build_location_csv(
+                nearest_lat, nearest_lon, _parquet_index
+            ).encode("utf-8")
+            st.download_button(
+                label="Download all metrics as CSV",
+                data=csv_bytes,
+                file_name=(
+                    f"baltic_climate_risk_{nearest_lat:.2f}N"
+                    f"_{nearest_lon:.2f}E.csv"
+                ),
+                mime="text/csv",
+            )
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 with st.expander("Methodology"):
