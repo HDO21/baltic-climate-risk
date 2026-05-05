@@ -177,7 +177,7 @@ for _meta in METRICS.values():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-@st.cache_data
+@st.cache_data(ttl=300)   # 5-min TTL so re-run pipeline outputs are picked up
 def _load_grid_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
@@ -591,8 +591,8 @@ if lon_raw.strip() or lat_raw.strip():
                             f"{m['y_label']}<extra></extra>"
                         ),
                     ))
-                except Exception:
-                    pass
+                except Exception as _e:
+                    st.caption(f"⚠ Could not load {_scen_key} projection for this location: {_e}")
 
             if _has_proj:
                 fig_pt.add_vline(
