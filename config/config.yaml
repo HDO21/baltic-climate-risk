@@ -40,6 +40,64 @@ metrics:
   prcptot:
     threshold_pr_mm: 1     # wet day for total: pr >= 1 mm/day
 
+# CORDEX projection configuration.
+# All CORDEX pipeline scripts and the bias correction module read from here.
+# No CORDEX-specific values should be hardcoded in Python source files.
+cordex:
+  # Spatial domain and model chain
+  domain: EUR-11                       # ~0.11° rotated-pole grid over Europe
+  gcm:    MPI-M-MPI-ESM-LR            # driving global climate model
+  rcm:    MPI-CSC-REMO2009            # regional climate model
+  ensemble: r1i1p1                     # standard single-member selection
+
+  # Raw file directories (relative to project root)
+  # Clipped files (after scripts/clip_cordex.py):  data/raw/cordex/{country}/
+  # Bias-corrected files (after run_bias_correction.py): data/raw/cordex_bc/{country}/{scenario}/
+  raw_dir: data/raw/cordex
+  bc_dir:  data/raw/cordex_bc
+  processed_dir: data/processed/cordex
+
+  # CORDEX variable names and unit conversions
+  variables:
+    tasmax: tasmax                     # daily maximum 2 m temperature (K)
+    tasmin: tasmin                     # daily minimum 2 m temperature (K)
+    tas:    tas                        # daily mean 2 m temperature (K)
+    pr:     pr                         # precipitation flux (kg m⁻² s⁻¹)
+  pr_unit_factor: 86400               # kg/m²/s → mm/day  (× seconds per day)
+  pr_wet_day_threshold_mm: 1.0        # ETCCDI wet-day standard; suppresses CORDEX drizzle bias
+  temp_offset_k: 273.15              # K → °C
+
+  # Calibration period: CORDEX historical (1991–2005) joined with
+  # RCP4.5 (2006–2020) to form the full WMO 1991–2020 reference window.
+  # The forcing discontinuity at 2006 is a known limitation — document in outputs.
+  calibration:
+    start: 1991
+    end:   2020
+    # CORDEX experiment that covers each sub-period
+    historical_experiment: historical  # covers 1991–2005
+    rcp_experiment:        rcp45       # covers 2006–2020 (joined to historical)
+
+  # Scenarios — add rcp85 here when data becomes available
+  scenarios:
+    rcp45:
+      label:            "RCP4.5 (Intermediate emissions)"
+      experiment:       rcp45
+      projection_start: 2021          # show ERA5-Land up to 2020, CORDEX from 2021
+      projection_end:   2100
+      line_color:       "#0072B2"     # Okabe-Ito blue — distinct from all bar colours
+      line_dash:        dot
+    rcp85:
+      label:            "RCP8.5 (High emissions)"
+      experiment:       rcp85
+      projection_start: 2021
+      projection_end:   2100
+      line_color:       "#D55E00"     # Okabe-Ito vermillion
+      line_dash:        dash
+
+  # Smoothing for display
+  display_smoothing_years: 20         # centred running mean window
+  display_smoothing_min_periods: 10   # minimum years for partial windows at edges
+
 # Physical plausibility bounds used by validate.py.
 # t2m bounds apply to raw ERA5-Land values (Kelvin); tx bounds to derived daily
 # maximum temperature after unit conversion (Celsius). Values outside these
