@@ -204,10 +204,17 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
             df_grid = _load_grid_parquet(path_str)
             lat_col = "latitude" if "latitude" in df_grid.columns else "lat"
             lon_col = "longitude" if "longitude" in df_grid.columns else "lon"
+            # Use joint 2-D distance to find the nearest cell in each grid.
+            # Exact coordinate matching fails for CORDEX rotated-pole grids
+            # whose cell coordinates differ from ERA5-Land's regular grid.
+            _uc = df_grid[[lat_col, lon_col]].drop_duplicates()
+            _d  = (_uc[lat_col].values - nearest_lat)**2 + \
+                  (_uc[lon_col].values - nearest_lon)**2
+            _b  = _uc.iloc[int(_d.argmin())]
             df_point = (
                 df_grid[
-                    (df_grid[lat_col] == nearest_lat) &
-                    (df_grid[lon_col] == nearest_lon)
+                    (df_grid[lat_col] == _b[lat_col]) &
+                    (df_grid[lon_col] == _b[lon_col])
                 ][["year", source_col]]
                 .rename(columns={"year": "Year", source_col: csv_header})
             )
@@ -561,7 +568,7 @@ if lon_raw.strip() or lat_raw.strip():
                     _nlat, _nlon = _best[_lc], _best[_lnc]
                     _dp_pt = _dg[
                         (_dg[_lc] == _nlat) & (_dg[_lnc] == _nlon)
-                    ][["year", col]].copy()
+                    ][["year", col]].copy().sort_values("year").reset_index(drop=True)
                     if _dp_pt.empty:
                         continue
                     _dp_pt["mean_20yr"] = _dp_pt[col].rolling(
