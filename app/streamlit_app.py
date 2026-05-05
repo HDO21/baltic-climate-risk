@@ -553,10 +553,12 @@ if lon_raw.strip() or lat_raw.strip():
                     _dg = _load_grid_parquet(str(_pq_path))
                     _lc = "latitude" if "latitude" in _dg.columns else "lat"
                     _lnc = "longitude" if "longitude" in _dg.columns else "lon"
-                    _lu = np.sort(_dg[_lc].unique())
-                    _lou = np.sort(_dg[_lnc].unique())
-                    _nlat = float(_lu[np.argmin(np.abs(_lu - lat))])
-                    _nlon = float(_lou[np.argmin(np.abs(_lou - lon))])
+                    # Use joint 2-D distance: independent 1-D lookup fails on
+                    # CORDEX rotated-pole grids where each (lat, lon) pair is unique.
+                    _cells = _dg[[_lc, _lnc]].drop_duplicates()
+                    _dists = (_cells[_lc].values - lat)**2 + (_cells[_lnc].values - lon)**2
+                    _best  = _cells.iloc[int(_dists.argmin())]
+                    _nlat, _nlon = _best[_lc], _best[_lnc]
                     _dp_pt = _dg[
                         (_dg[_lc] == _nlat) & (_dg[_lnc] == _nlon)
                     ][["year", col]].copy()
