@@ -182,7 +182,7 @@ def _load_grid_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def _build_location_csv(nearest_lat: float, nearest_lon: float,
                          parquet_paths: tuple, year_end: int = 2020) -> str:
     """
