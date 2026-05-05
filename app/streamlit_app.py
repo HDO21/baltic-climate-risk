@@ -47,7 +47,7 @@ METRICS = {
         "bar_color":       "#D55E00",   # vermillion
         "y_label":         "Days per year",
         "pipeline_flag":   "heat_days",
-        "csv_header":      f"Extreme Heat Days – TX≥{_THRESHOLD_HEAT_C:.0f}°C [days/year]",
+        "csv_header":      f"Extreme Heat Days - TX>={_THRESHOLD_HEAT_C:.0f}degC [days/year]",
     },
     "Annual Maximum Temperature": {
         "col":             "txx",
@@ -57,7 +57,7 @@ METRICS = {
         "bar_color":       "#E69F00",   # orange
         "y_label":         "Temperature (°C)",
         "pipeline_flag":   "txx",
-        "csv_header":      "Annual Maximum Temperature – TXx [°C]",
+        "csv_header":      "Annual Maximum Temperature - TXx [degC]",
     },
     "Tropical Nights": {
         "col":             "tr15",
@@ -67,7 +67,7 @@ METRICS = {
         "bar_color":       "#CC79A7",   # reddish purple
         "y_label":         "Days per year",
         "pipeline_flag":   "tr15",
-        "csv_header":      "Tropical Nights – TN≥17°C [days/year]",
+        "csv_header":      "Tropical Nights - TN>=17degC [days/year]",
     },
     # ── Temperature: cold ─────────────────────────────────────────────────────
     "Hard Frost Days": {
@@ -78,7 +78,7 @@ METRICS = {
         "bar_color":       "#882255",   # wine — Paul Tol muted palette
         "y_label":         "Days per year",
         "pipeline_flag":   "hard_frost",
-        "csv_header":      "Hard Frost Days – TN<−10°C [days/year]",
+        "csv_header":      "Hard Frost Days - TN<-10degC [days/year]",
     },
     "Frost Days": {
         "col":             "frost_days",
@@ -88,7 +88,7 @@ METRICS = {
         "bar_color":       "#0072B2",   # blue
         "y_label":         "Days per year",
         "pipeline_flag":   "frost_days",
-        "csv_header":      f"Frost Days – TN<{_THRESHOLD_FROST_C:.0f}°C [days/year]",
+        "csv_header":      f"Frost Days - TN<{_THRESHOLD_FROST_C:.0f}degC [days/year]",
     },
     "Ice Days": {
         "col":             "id0",
@@ -98,7 +98,7 @@ METRICS = {
         "bar_color":       "#56B4E9",   # sky blue
         "y_label":         "Days per year",
         "pipeline_flag":   "id0",
-        "csv_header":      "Ice Days – TX<0°C [days/year]",
+        "csv_header":      "Ice Days - TX<0degC [days/year]",
     },
     "Annual Minimum Temperature": {
         "col":             "tnn",
@@ -108,7 +108,7 @@ METRICS = {
         "bar_color":       "#009E73",   # bluish green
         "y_label":         "Temperature (°C)",
         "pipeline_flag":   "tnn",
-        "csv_header":      "Annual Minimum Temperature – TNn [°C]",
+        "csv_header":      "Annual Minimum Temperature - TNn [degC]",
     },
     # ── Precipitation ─────────────────────────────────────────────────────────
     "Consecutive Dry Days": {
@@ -119,7 +119,7 @@ METRICS = {
         "bar_color":       "#DDAA33",   # golden yellow
         "y_label":         "Days",
         "pipeline_flag":   "cdd",
-        "csv_header":      "Consecutive Dry Days – CDD [days]",
+        "csv_header":      "Consecutive Dry Days - CDD [days]",
     },
     "Heavy Precipitation Days": {
         "col":             "r20mm",
@@ -129,7 +129,7 @@ METRICS = {
         "bar_color":       "#332288",   # indigo
         "y_label":         "Days per year",
         "pipeline_flag":   "r20mm",
-        "csv_header":      "Heavy Precipitation Days – R20mm [days/year]",
+        "csv_header":      "Heavy Precipitation Days - R20mm [days/year]",
     },
     "Precipitation Intensity": {
         "col":             "sdii",
@@ -139,7 +139,7 @@ METRICS = {
         "bar_color":       "#44BB99",   # mint
         "y_label":         "mm per day",
         "pipeline_flag":   "sdii",
-        "csv_header":      "Precipitation Intensity – SDII [mm/day]",
+        "csv_header":      "Precipitation Intensity - SDII [mm/day]",
     },
     "Annual Total Precipitation": {
         "col":             "prcptot",
@@ -149,7 +149,7 @@ METRICS = {
         "bar_color":       "#117733",   # dark green
         "y_label":         "mm per year",
         "pipeline_flag":   "prcptot",
-        "csv_header":      "Annual Total Precipitation – PRCPTOT [mm/year]",
+        "csv_header":      "Annual Total Precipitation - PRCPTOT [mm/year]",
     },
 }
 
@@ -182,13 +182,12 @@ def _load_grid_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-@st.cache_data(ttl=300)
 def _build_location_csv(nearest_lat: float, nearest_lon: float,
-                         parquet_paths: tuple, year_end: int = 2020) -> str:
+                         parquet_paths: tuple, year_end: int = 2020) -> tuple[str, list[str]]:
     """
     Load every available metric Parquet, extract the nearest grid cell, join
     on a year spine (1991–year_end), append a period-mean row, and return a
-    semicolon-delimited CSV string.
+    semicolon-delimited CSV string plus a list of any error messages.
 
     parquet_paths : tuple of (source_col, csv_header, path_str)
                     Each entry is renamed to csv_header immediately on load so
@@ -196,11 +195,14 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
     year_end      : last year in the output (2020 for ERA5 only; 2100 with projections).
     """
     df_all = pd.DataFrame({"Year": list(range(1991, year_end + 1))})
+    errors: list[str] = []
 
     for source_col, csv_header, path_str in parquet_paths:
         if not Path(path_str).exists():
             continue
         try:
+            # _build_location_csv is not itself cached, so calling the cached
+            # _load_grid_parquet here is fine (not a nested-cache call).
             df_grid = _load_grid_parquet(path_str)
             lat_col = "latitude" if "latitude" in df_grid.columns else "lat"
             lon_col = "longitude" if "longitude" in df_grid.columns else "lon"
@@ -220,7 +222,8 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
             )
             if not df_point.empty:
                 df_all = df_all.merge(df_point, on="Year", how="left")
-        except Exception:
+        except Exception as exc:
+            errors.append(f"{Path(path_str).name}: {type(exc).__name__}: {exc}")
             continue
 
     mean_row = {"Year": "Period mean"}
@@ -228,7 +231,7 @@ def _build_location_csv(nearest_lat: float, nearest_lon: float,
         if c != "Year":
             mean_row[c] = round(df_all[c].mean(), 2)
     df_all = pd.concat([df_all, pd.DataFrame([mean_row])], ignore_index=True)
-    return df_all.to_csv(sep=";", index=False)
+    return df_all.to_csv(sep=";", index=False), errors
 
 
 def _parse_coord(text: str):
@@ -632,9 +635,14 @@ if lon_raw.strip() or lat_raw.strip():
                         _parquet_index += ((meta["col"], _hdr, str(_pq)),)
 
             _csv_year_end = 2100 if _has_proj else 2020
-            csv_bytes = _build_location_csv(
+            _csv_str, _csv_errors = _build_location_csv(
                 nearest_lat, nearest_lon, _parquet_index, year_end=_csv_year_end
-            ).encode("utf-8")
+            )
+            if _csv_errors:
+                with st.expander(f"CSV warnings ({len(_csv_errors)})"):
+                    for _err in _csv_errors:
+                        st.caption(_err)
+            csv_bytes = _csv_str.encode("utf-8")
             st.download_button(
                 label="Download all metrics as CSV",
                 data=csv_bytes,
