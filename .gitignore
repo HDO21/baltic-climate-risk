@@ -4,6 +4,7 @@ data/raw/
 *.grib
 *.parquet
 !data/processed/*.parquet
+!data/processed/cordex/**/*.parquet
 
 # data/processed/ is intentionally NOT ignored so pre-computed CSVs
 # can be committed and served directly by Streamlit Cloud
