@@ -382,12 +382,12 @@ for _scen_key, _dp in _df_proj.items():
     _sm = _scenarios_cfg[_scen_key]
     _color, _dash = _sm.get("line_color", "#888"), _sm.get("line_dash", "dot")
     _label = _sm.get("label", _scen_key)
-    fig.add_trace(go.Scatter(           # annual values — faint background
+    fig.add_trace(go.Scatter(           # annual values — secondary background
         x=_dp["year"], y=_dp[col],
         name=f"{_label} (annual)",
         mode="lines",
-        line=dict(color=_color, width=1),
-        opacity=0.2,
+        line=dict(color=_color, width=1.5),
+        opacity=0.4,
         showlegend=False,
         hovertemplate=f"{_label} %{{x}}: <b>%{{y:.2f}}</b> {m['y_label']}<extra></extra>",
     ))
@@ -585,7 +585,7 @@ if lon_raw.strip() or lat_raw.strip():
                     fig_pt.add_trace(go.Scatter(
                         x=_dp_pt["year"], y=_dp_pt[col],
                         name=f"{_plabel} (annual)", mode="lines",
-                        line=dict(color=_color, width=1), opacity=0.2,
+                        line=dict(color=_color, width=1.5), opacity=0.4,
                         showlegend=False,
                         hovertemplate=(
                             f"{_plabel} %{{x}}: <b>%{{y:.2f}}</b> "
